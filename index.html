@@ -464,7 +464,6 @@ function normaliseStocks(){
       exchange: String(st.exchange||'US').toUpperCase().trim()==='SG' ? 'SG' : 'US'
     };
     if(!u.nameLocked && TICKER_NAME_LOCK[u.ticker]) u.companyName = TICKER_NAME_LOCK[u.ticker];
-    if(u.ticker==='SET EUR' && u.currency!=='EUR'){ u.currency='EUR'; u.lastPrice=null; }
     return u;
   });
 }
@@ -487,67 +486,40 @@ function _setBannerText(banner, state, ageHours){
 }
 
 // Inject any seed stocks not already present (matched by ticker+exchange).
-// Preserves all existing data — only adds, never removes or overwrites.
+// Disabled for the public template — seed data is generic and should not
+// be auto-injected into a real portfolio loaded from finance-data.json.
+// Users can trigger this manually via History → "Sync missing stocks" if needed.
 function mergeMissingSeedStocks(){
-  let added=false;
-  for(const seed of SEED_STOCKS){
-    const exists=stocks.some(s=>s.ticker===seed.ticker && s.exchange===seed.exchange);
-    if(!exists){
-      stocks.push({...seed, id:uid()}); // fresh id to avoid collisions
-      added=true;
-    }
-  }
-  if(added) saveAll();
+  // no-op in public template
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SEED DATA
+// SEED DATA  — generic template, no personal information
+// Users replace these with their own holdings after loading their
+// finance-data.json, or by adding/editing entries manually.
 // ════════════════════════════════════════════════════════════════════
 const SEED_STOCKS=[
-  // US Portfolio
+  // 3 sample US stocks
   {id:uid(),ticker:'AAPL',exchange:'US',companyName:'Apple Inc.',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'AMZN',exchange:'US',companyName:'Amazon.com Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'ASML',exchange:'US',companyName:'ASML Holding NV',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'BXSL',exchange:'US',companyName:'Blackstone Secured Lending Fund',currency:'USD',units:300,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'CPRT',exchange:'US',companyName:'Copart Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'ELV',exchange:'US',companyName:'Elevance Health Inc.',currency:'USD',units:25,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'FICO',exchange:'US',companyName:'Fair Isaac Corporation',currency:'USD',units:5,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'LVMUY',exchange:'US',companyName:'LVMH Moët Hennessy (ADR)',currency:'USD',units:20,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'MA',exchange:'US',companyName:'Mastercard Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'MBGL',exchange:'US',companyName:'Mobility Global Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'MELI',exchange:'US',companyName:'MercadoLibre Inc.',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'META',exchange:'US',companyName:'Meta Platforms Inc.',currency:'USD',units:60,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'MSFT',exchange:'US',companyName:'Microsoft Corporation',currency:'USD',units:100,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'NVDA',exchange:'US',companyName:'NVIDIA Corporation',currency:'USD',units:110,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'PANW',exchange:'US',companyName:'Palo Alto Networks Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'PLTR',exchange:'US',companyName:'Palantir Technologies Inc.',currency:'USD',units:80,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'SPGI',exchange:'US',companyName:'S&P Global Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'TMO',exchange:'US',companyName:'Thermo Fisher Scientific Inc.',currency:'USD',units:20,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'UNH',exchange:'US',companyName:'UnitedHealth Group Inc.',currency:'USD',units:25,lastPrice:null,lastChange:null,lastUpdated:null},
-  // SGX Portfolio
-  {id:uid(),ticker:'SET EUR',exchange:'SG',companyName:'Stoneweg Europe Stapled Trust',currency:'EUR',units:4000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'A17U',exchange:'SG',companyName:'CapitaLand Integrated Commercial Trust',currency:'SGD',units:1000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'J69U',exchange:'SG',companyName:'Frasers Logistics & Commercial Trust',currency:'SGD',units:5000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'M44U',exchange:'SG',companyName:'Mapletree Industrial Trust',currency:'SGD',units:5000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'O39',exchange:'SG',companyName:'OCBC Bank',currency:'SGD',units:1000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'U11',exchange:'SG',companyName:'United Overseas Bank (UOB)',currency:'SGD',units:300,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'C38U',exchange:'SG',companyName:'CapitaLand Ascendas REIT',currency:'SGD',units:4000,lastPrice:null,lastChange:null,lastUpdated:null},
-  {id:uid(),ticker:'BWCU',exchange:'SG',companyName:'Nikko AM-StraitsTrading Asia ex Japan REIT ETF',currency:'SGD',units:10000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'MSFT',exchange:'US',companyName:'Microsoft Corporation',currency:'USD',units:5,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'NVDA',exchange:'US',companyName:'NVIDIA Corporation',currency:'USD',units:8,lastPrice:null,lastChange:null,lastUpdated:null},
+  // 3 sample SGX stocks
+  {id:uid(),ticker:'D05',exchange:'SG',companyName:'DBS Group Holdings',currency:'SGD',units:100,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'O39',exchange:'SG',companyName:'OCBC Bank',currency:'SGD',units:200,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'C38U',exchange:'SG',companyName:'CapitaLand Ascendas REIT',currency:'SGD',units:500,lastPrice:null,lastChange:null,lastUpdated:null},
 ];
 const SEED_ASSETS=[
   // Cash
-  {id:uid(),name:'OCBC SG',category:'Cash',value:71212,isLiability:false,origCurrency:'SGD',origValue:71212},
-  {id:uid(),name:'Citi SG',category:'Cash',value:21972,isLiability:false,origCurrency:'SGD',origValue:21972},
-  {id:uid(),name:'UOB TH',category:'Cash',value:Math.round(1524259/22.4),isLiability:false,origCurrency:'THB',origValue:1524259},
+  {id:uid(),name:'Bank 1 (SGD)',category:'Cash',value:1000,isLiability:false,origCurrency:'SGD',origValue:1000},
+  {id:uid(),name:'Bank 2 (THB)',category:'Cash',value:Math.round(50000/22.4),isLiability:false,origCurrency:'THB',origValue:50000},
   // CPF
-  {id:uid(),name:'CPF Ordinary Account',category:'CPF',value:109000,isLiability:false,origCurrency:'SGD',origValue:109000},
-  {id:uid(),name:'CPF Special Account',category:'CPF',value:133000,isLiability:false,origCurrency:'SGD',origValue:133000},
+  {id:uid(),name:'CPF Ordinary Account',category:'CPF',value:10000,isLiability:false,origCurrency:'SGD',origValue:10000},
+  {id:uid(),name:'CPF Special Account',category:'CPF',value:5000,isLiability:false,origCurrency:'SGD',origValue:5000},
   // Property
-  {id:uid(),name:'Citylights',category:'Property',value:1300000,isLiability:false,origCurrency:'SGD',origValue:1300000},
-  {id:uid(),name:'Mortgage outstanding',category:'Property',value:748000,isLiability:true,origCurrency:'SGD',origValue:748000},
-  {id:uid(),name:'LPN Pinklao 2',category:'Property',value:Math.round(2220000/22.4),isLiability:false,origCurrency:'THB',origValue:2220000},
+  {id:uid(),name:'Property 1',category:'Property',value:500000,isLiability:false,origCurrency:'SGD',origValue:500000},
+  {id:uid(),name:'Home Loan',category:'Property',value:300000,isLiability:true,origCurrency:'SGD',origValue:300000},
   // Insurance
-  {id:uid(),name:'Prudential TH',category:'Insurance',value:14500,isLiability:false,origCurrency:'SGD',origValue:14500},
+  {id:uid(),name:'Life Insurance',category:'Insurance',value:10000,isLiability:false,origCurrency:'SGD',origValue:10000},
 ];
 
 // ════════════════════════════════════════════════════════════════════
@@ -603,10 +575,9 @@ function yahooSymbol(st) {
   return t + '.SI';
 }
 
-const TICKER_NAME_LOCK = {
-  'MBGL': 'Mobility Global Inc.',
-  'SET EUR': 'Stoneweg Europe Stapled Trust',
-};
+// Known ticker name overrides — add entries here if Yahoo returns wrong company name
+// Example: 'MBGL': 'Mobility Global Inc.'
+const TICKER_NAME_LOCK = {};
 
 // Try Yahoo v8 chart endpoint
 async function tryYahooProxy(proxyFn, symbol) {
@@ -1745,14 +1716,12 @@ function importData(){
 }
 
 function syncMissingAndRefresh(){
-  const before=stocks.length;
-  mergeMissingSeedStocks();
-  const added=stocks.length-before;
-  render();
-  if(added>0){
-    alert(`Added ${added} missing stock${added>1?'s':''}. Click "↻ Refresh prices" to fetch their prices.`);
+  if(stocks.length === 0){
+    stocks = SEED_STOCKS.map(s=>({...s, id:uid()}));
+    saveAll(); render();
+    alert('Sample stocks restored. Replace them with your own holdings.');
   } else {
-    alert('All default stocks are already present. No changes made.');
+    alert('Your portfolio already has stocks. Use + Add to add more, or ↺ Reset stock list to start fresh.');
   }
 }
 
