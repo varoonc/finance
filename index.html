@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Net Worth Tracker</title>
+
+<!-- PWA / Add to Home Screen -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1D9E75" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1c1c1a" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Net Worth">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#ffffff; --bg2:#f5f5f3; --bg3:#eeece8;
+  --text:#1a1a18; --text2:#6b6b67; --text3:#9a9a96;
+  --border:rgba(0,0,0,0.10); --border2:rgba(0,0,0,0.18);
+  --radius:10px; --radius-sm:6px;
+  --blue:#378ADD; --green:#1D9E75; --red:#E24B4A;
+  --amber:#BA7517; --purple:#7F77DD; --gray:#888780; --coral:#D85A30;
+  --shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04);
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#1c1c1a; --bg2:#252523; --bg3:#2e2e2b;
+    --text:#f0ede8; --text2:#9a9a96; --text3:#6b6b67;
+    --border:rgba(255,255,255,0.09); --border2:rgba(255,255,255,0.16);
+    --shadow:0 1px 3px rgba(0,0,0,0.3);
+  }
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg3);color:var(--text);min-height:100vh;font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+.app{max-width:900px;margin:0 auto;padding:0 0 80px;}
+.topbar{background:var(--bg);border-bottom:0.5px solid var(--border);padding:12px 16px;position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+.topbar-title{font-size:16px;font-weight:600;color:var(--text);}
+.topbar-sub{font-size:11px;color:var(--text3);margin-top:1px;}
+.topbar-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.save-badge{font-size:11px;color:var(--green);transition:opacity .3s;}
+.content{padding:14px;}
+.tabs{display:flex;gap:3px;background:var(--bg2);border-radius:var(--radius);padding:4px;margin-bottom:14px;}
+.tab{flex:1;padding:7px 4px;border:none;background:transparent;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;color:var(--text2);font-weight:400;transition:background .15s,color .15s;font-family:inherit;}
+.tab.active{background:var(--bg);color:var(--text);font-weight:500;box-shadow:var(--shadow);}
+.card{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow);}
+.card-title{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:12px;}
+.metric-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:12px;}
+@media(min-width:480px){.metric-grid{grid-template-columns:repeat(4,1fr);}}
+.metric{background:var(--bg2);border-radius:var(--radius-sm);padding:11px 13px;}
+.metric-label{font-size:11px;color:var(--text3);margin-bottom:2px;}
+.metric-value{font-size:18px;font-weight:600;}
+.metric-sub{font-size:11px;color:var(--text3);margin-top:2px;}
+.goal-row{display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px;}
+.goal-track{background:var(--bg2);border-radius:6px;height:10px;overflow:hidden;}
+.goal-fill{height:100%;border-radius:6px;background:var(--blue);transition:width .5s;}
+.goal-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-top:4px;}
+.alloc-track{display:flex;height:8px;border-radius:5px;overflow:hidden;margin-bottom:11px;}
+.alloc-seg{height:100%;transition:width .4s;}
+.alloc-legend{display:flex;flex-wrap:wrap;gap:7px 13px;}
+.alloc-item{display:flex;align-items:center;gap:5px;font-size:12px;}
+.alloc-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+button{font-family:inherit;cursor:pointer;}
+.btn{display:inline-flex;align-items:center;gap:5px;font-size:13px;padding:7px 12px;background:var(--bg);border:0.5px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);transition:background .12s;white-space:nowrap;}
+.btn:hover{background:var(--bg2);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn-primary{background:var(--text);color:var(--bg);border-color:transparent;}
+.btn-primary:hover{opacity:.88;}
+.btn-danger{color:#a32d2d;border-color:rgba(162,45,45,.25);}
+.btn-sm{padding:4px 9px;font-size:12px;}
+.btn-block{width:100%;justify-content:center;padding:10px;margin-top:6px;}
+.btn-refresh{color:#1a5fa8;border-color:rgba(55,138,221,.35);background:rgba(55,138,221,.09);font-weight:500;}
+/* ── section headers ── */
+.section-hdr{display:flex;align-items:center;gap:8px;margin:16px 0 6px;}
+.section-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+.section-label{font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;flex:1;}
+.section-total{font-size:12px;color:var(--text2);font-weight:500;}
+/* ── stock table ── */
+.stock-table{width:100%;border-collapse:collapse;}
+.stock-table th{font-size:11px;font-weight:500;color:var(--text3);text-align:left;padding:6px 8px;border-bottom:0.5px solid var(--border);white-space:nowrap;}
+.stock-table th:hover{background:var(--bg2);}
+.stock-table th span{transition:color .15s;}
+.stock-table th.num,.stock-table td.num{text-align:right;}
+.stock-table td{font-size:13px;padding:8px 8px;border-bottom:0.5px solid var(--border);color:var(--text);vertical-align:middle;}
+.stock-table tr:last-child td{border-bottom:none;}
+.stock-table tr:hover td{background:var(--bg2);}
+.ticker-cell{font-family:monospace;font-size:12px;font-weight:600;color:var(--blue);}
+.company-cell{color:var(--text2);font-size:12px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.price-cell{font-weight:500;}
+.value-cell{font-weight:600;}
+.change-pos{color:var(--green);}
+.change-neg{color:var(--red);}
+.price-stale{color:var(--text3);font-style:italic;}
+.price-loading{color:var(--text3);}
+@media(max-width:500px){
+  .hide-mobile{display:none;}
+}
+/* ── asset rows (non-stock) ── */
+.asset-row{background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:9px 12px;display:flex;align-items:center;gap:10px;margin-bottom:5px;box-shadow:var(--shadow);}
+.asset-name{flex:1;font-size:13px;font-weight:500;}
+.asset-value{font-size:14px;font-weight:600;min-width:80px;text-align:right;}
+.liab-badge{font-size:10px;background:#FCEBEB;color:#791F1F;padding:1px 6px;border-radius:10px;margin-top:2px;display:inline-block;}
+/* ── history ── */
+.snap-row{padding:10px 0;border-bottom:0.5px solid var(--border);display:flex;align-items:flex-start;gap:10px;}
+.snap-row:last-child{border-bottom:none;}
+.snap-stats{display:flex;flex-wrap:wrap;gap:10px;margin-top:3px;}
+.snap-stat{font-size:12px;color:var(--text2);}
+.snap-stat strong{color:var(--text);}
+/* ── modal ── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;z-index:200;padding:14px;}
+.modal{background:var(--bg);border-radius:var(--radius);padding:18px;width:100%;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.2);max-height:90vh;overflow-y:auto;}
+.modal h2{font-size:15px;font-weight:600;margin-bottom:14px;}
+label{font-size:12px;color:var(--text2);display:block;margin-bottom:3px;}
+input[type=text],input[type=number],select,textarea{width:100%;padding:8px 10px;font-size:14px;font-family:inherit;background:var(--bg2);border:0.5px solid var(--border2);border-radius:var(--radius-sm);color:var(--text);margin-bottom:10px;outline:none;transition:border-color .15s;}
+input:focus,select:focus{border-color:var(--blue);}
+.checkbox-row{display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:14px;cursor:pointer;}
+.checkbox-row input{width:auto;margin:0;}
+.modal-btns{display:flex;gap:8px;margin-top:4px;}
+/* ── search results ── */
+.search-results{background:var(--bg);border:0.5px solid var(--border2);border-radius:var(--radius-sm);margin-top:-8px;margin-bottom:10px;overflow:hidden;box-shadow:var(--shadow);}
+.search-item{padding:9px 11px;cursor:pointer;border-bottom:0.5px solid var(--border);font-size:13px;transition:background .1s;}
+.search-item:last-child{border-bottom:none;}
+.search-item:hover{background:var(--bg2);}
+.search-ticker{font-family:monospace;font-weight:600;color:var(--blue);margin-right:8px;}
+.search-name{color:var(--text2);font-size:12px;}
+.search-exch{font-size:10px;color:var(--text3);margin-left:6px;}
+/* ── status ── */
+.status-bar{font-size:11px;color:var(--text3);padding:5px 0;display:flex;align-items:center;gap:6px;}
+.spin{display:inline-block;animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+/* ── chart ── */
+.chart-wrap{width:100%;overflow:hidden;}
+svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
+.tools-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;}
+.empty{text-align:center;padding:2rem 0;color:var(--text2);font-size:13px;}
+.snap-form{background:var(--bg2);border-radius:var(--radius);padding:14px;margin-bottom:12px;border:1px solid rgba(55,138,221,.4);}
+.snap-preview{font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.7;}
+.tab-content{display:none;} .tab-content.active{display:block;}
+.portfolio-summary{background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:10px;display:flex;flex-wrap:wrap;gap:10px 20px;}
+.port-stat{font-size:12px;color:var(--text2);}
+.port-stat strong{color:var(--text);font-weight:600;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div>
+      <div class="topbar-title">Net Worth Tracker</div>
+      <div class="topbar-sub">10-year retirement goal · SGD</div>
+    </div>
+    <div class="topbar-actions">
+      <span class="save-badge" id="saveBadge" style="opacity:0">Saved ✓</span>
+      <button class="btn btn-refresh btn-sm" id="refreshBtn" onclick="refreshAllPrices(true)">↻ Refresh prices</button>
+      <button class="btn btn-sm" onclick="exportData()" title="Export finance-data.json backup" style="color:#1a5fa8;border-color:rgba(26,95,168,.3);background:rgba(26,95,168,.07);font-weight:500">⬇ Export data</button>
+      <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
+    </div>
+  </div>
+  <!-- Backup warning banner -->
+  <div id="backup-banner" style="display:none;align-items:center;gap:10px;flex-wrap:wrap;background:#FEF3C7;border-bottom:0.5px solid #D97706;padding:8px 16px;font-size:12px;color:#92400E">
+    <span id="banner-msg" style="flex:1"></span>
+    <button onclick="exportData()" style="background:#D97706;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:12px;cursor:pointer;font-weight:500;white-space:nowrap">⬇ Export now</button>
+    <button onclick="importData()" style="background:transparent;border:0.5px solid #D97706;color:#92400E;border-radius:5px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap">⬆ Load from file</button>
+    <button onclick="this.parentElement.style.display='none'" style="background:transparent;border:none;color:#92400E;font-size:16px;cursor:pointer;padding:0 4px">×</button>
+  </div>
+
+  <div class="content">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab" onclick="switchTab('portfolio')">Stock Portfolio</button>
+      <button class="tab" onclick="switchTab('assets')">Other assets</button>
+      <button class="tab" onclick="switchTab('history')">History</button>
+    </div>
+
+    <div id="view-dashboard" class="tab-content active"></div>
+    <div id="view-portfolio" class="tab-content"></div>
+    <div id="view-assets" class="tab-content"></div>
+    <div id="view-history" class="tab-content"></div>
+  </div>
+</div>
+
+<!-- Add/Edit modal -->
+<div class="overlay" id="modal" style="display:none" onclick="if(event.target===this)closeModal()">
+<div class="modal" onclick="event.stopPropagation()">
+  <h2 id="modal-title">Add item</h2>
+  <!-- type selector -->
+  <div id="type-selector" style="display:flex;gap:6px;margin-bottom:14px;">
+    <button class="btn btn-sm" id="type-btn-stock" style="flex:1;justify-content:center" onclick="setModalType('stock')">📈 Stock</button>
+    <button class="btn btn-sm" id="type-btn-asset" style="flex:1;justify-content:center" onclick="setModalType('asset')">🏦 Other asset / liability</button>
+  </div>
+
+  <!-- STOCK fields -->
+  <div id="stock-fields">
+    <label>Exchange / Market</label>
+    <select id="f-exchange" onchange="onExchangeChange()">
+      <option value="US">🇺🇸 US Market (USD)</option>
+      <option value="SG">🇸🇬 SGX Singapore (SGD)</option>
+    </select>
+    <label>Stock ticker</label>
+    <div style="display:flex;gap:6px;margin-bottom:0">
+      <input type="text" id="f-ticker" placeholder="e.g. AAPL" style="margin-bottom:0;text-transform:uppercase" oninput="onTickerInput()" onkeydown="if(event.key==='Enter')searchTicker()">
+      <button class="btn btn-sm btn-refresh" onclick="searchTicker()" style="white-space:nowrap;margin-bottom:0">Search</button>
+    </div>
+    <div id="search-results" style="margin-top:4px;margin-bottom:10px;"></div>
+    <div id="stock-fetched" style="display:none;background:var(--bg2);border-radius:var(--radius-sm);padding:10px;margin-bottom:10px;font-size:13px;"></div>
+    <label>Units held</label>
+    <input type="number" id="f-units" placeholder="0" min="0" step="any">
+  </div>
+
+  <!-- ASSET fields -->
+  <div id="asset-fields" style="display:none">
+    <label>Name</label>
+    <input type="text" id="f-name" placeholder="e.g. CPF Special Account">
+    <label>Category</label>
+    <select id="f-cat">
+      <option>Cash</option><option>CPF</option><option>Property</option><option>Insurance</option><option>Other</option>
+    </select>
+    <label>Currency</label>
+    <select id="f-currency" onchange="onAssetCurrencyChange()">
+      <option value="SGD">🇸🇬 SGD — Singapore Dollar</option>
+      <option value="THB">🇹🇭 THB — Thai Baht</option>
+      <option value="USD">🇺🇸 USD — US Dollar</option>
+      <option value="EUR">🇪🇺 EUR — Euro</option>
+    </select>
+    <label id="f-value-label">Amount (SGD)</label>
+    <input type="text" id="f-value" placeholder="0" inputmode="numeric" oninput="updateSGDEquiv()">
+    <div id="f-sgd-equiv" style="display:none;font-size:12px;color:var(--text2);margin-top:-6px;margin-bottom:10px;"></div>
+    <label class="checkbox-row"><input type="checkbox" id="f-liab"> This is a liability</label>
+  </div>
+
+  <div class="modal-btns">
+    <button class="btn btn-primary" style="flex:1" id="submit-btn" onclick="submitModal()">Add</button>
+    <button class="btn" onclick="closeModal()">Cancel</button>
+  </div>
+</div>
+</div>
+
+<!-- Edit stock modal -->
+<div class="overlay" id="edit-stock-modal" style="display:none" onclick="if(event.target===this)closeEditStock()">
+<div class="modal" onclick="event.stopPropagation()">
+  <h2>Edit position</h2>
+  <div id="edit-stock-info" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;font-size:13px;"></div>
+  <label>Units held</label>
+  <input type="number" id="edit-units" min="0" step="any" style="margin-bottom:12px;">
+  <label>Company name <span style="color:var(--text3);font-weight:400">(edit to override auto-fetch)</span></label>
+  <input type="text" id="edit-company" style="margin-bottom:4px;">
+  <label style="display:flex;align-items:center;gap:7px;margin-bottom:14px;cursor:pointer;font-size:12px;">
+    <input type="checkbox" id="edit-lock-name" style="width:auto;margin:0;">
+    Lock name — don't overwrite on refresh
+  </label>
+  <div class="modal-btns">
+    <button class="btn btn-primary" style="flex:1" onclick="submitEditStock()">Save</button>
+    <button class="btn btn-danger" onclick="deleteStockConfirm()">Remove</button>
+    <button class="btn" onclick="closeEditStock()">Cancel</button>
+  </div>
+</div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// DATA STRUCTURES
+// ════════════════════════════════════════════════════════════════════
+const CAT_COLOR = {Cash:'#1D9E75',Investments:'#378ADD',CPF:'#7F77DD',Property:'#BA7517',Insurance:'#D85A30',Other:'#888780',Stocks:'#378ADD'};
+const CATEGORIES = ['Cash','CPF','Property','Insurance','Other'];
+const CURRENT_YEAR = new Date().getFullYear();
+
+// Retirement goal settings — all user-editable
+let goalSettings = {
+  monthlyIncome: 10000,   // SGD/month desired in retirement
+  yearsToRetire: 10,      // years from now
+  annualReturn:  5.0,     // % p.a. investment return
+  swr:           4.0,     // % safe withdrawal rate
+};
+
+// Derived goal values (recomputed whenever settings change)
+function computeGoal(){
+  const nestEgg = (goalSettings.monthlyIncome * 12) / (goalSettings.swr / 100);
+  const retireYear = CURRENT_YEAR + goalSettings.yearsToRetire;
+  return { nestEgg, retireYear };
+}
+
+// Monthly savings needed to close the gap
+function computeMonthlySavingsNeeded(nav){
+  const {nestEgg} = computeGoal();
+  const r = goalSettings.annualReturn / 100;
+  const n = goalSettings.yearsToRetire;
+  const growthFactor = Math.pow(1 + r, n);
+  const currentGrown = nav * growthFactor;
+  const gap = Math.max(0, nestEgg - currentGrown);
+  if(gap <= 0) return 0;
+  const monthlyRate = r / 12;
+  const months = n * 12;
+  if(r < 0.0001) return gap / months;
+  return gap * monthlyRate / (growthFactor - 1);
+}
+
+let usdSgdRate = 1.34;
+let thbSgdRate = 1/22.4;
+let eurSgdRate = 1.45; // ~SGD 1.45 per EUR (approximate, fetchable via live rate)
+
+// Stock positions: {id, ticker, exchange ('US'|'SG'), companyName, currency, units, lastPrice, lastChange, lastUpdated}
+let stocks = [];
+// Other assets: {id, name, category, value, isLiability}
+let assets = [];
+// Snapshots: {date, totalAssets, totalLiab, nav, investable, note, stockValue}
+let snapshots = [];
+
+let currentTab = 'dashboard';
+let modalType = 'stock';
+let editStockId = null;
+let editAssetId = null;
+let showSnapForm = false;
+let fetchingTicker = null; // ticker being previewed in modal
+let searchDebounce = null;
+
+function uid() { return Math.random().toString(36).slice(2,9); }
+
+// ════════════════════════════════════════════════════════════════════
+// FORMAT HELPERS
+// ════════════════════════════════════════════════════════════════════
+function fmtK(v,currency='SGD'){
+  const a=Math.abs(v);
+  const sym = currency==='USD'?'US$':'S$';
+  if(a>=1_000_000) return (v<0?'-':'')+sym+(a/1_000_000).toFixed(2)+'M';
+  if(a>=1_000) return (v<0?'-':'')+sym+Math.round(a/1_000)+'K';
+  return (v<0?'-':'')+sym+Math.round(a).toLocaleString();
+}
+function fmtPrice(v,currency='USD'){
+  const sym=currency==='USD'?'US$':'S$';
+  return sym+(+v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function fmtFull(v){return 'SGD '+Math.abs(Math.round(v)).toLocaleString();}
+function todayStr(){return new Date().toISOString().slice(0,10);}
+function tsAgo(iso){
+  if(!iso) return 'never';
+  const d=(Date.now()-new Date(iso).getTime())/60000;
+  if(d<2) return 'just now';
+  if(d<60) return Math.round(d)+'m ago';
+  if(d<1440) return Math.round(d/60)+'h ago';
+  return Math.round(d/1440)+'d ago';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// PERSISTENCE  —  two-layer: localStorage (fast) + JSON file (portable)
+// ════════════════════════════════════════════════════════════════════
+
+function buildDataPayload(){
+  return {
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    stocks, assets, snapshots,
+    fxRates: { usdSgdRate, thbSgdRate, eurSgdRate },
+    goalSettings,
+  };
+}
+
+function applyDataPayload(d){
+  if(d.stocks)   stocks    = d.stocks;
+  if(d.assets)   assets    = d.assets;
+  if(d.snapshots) snapshots = d.snapshots;
+  if(d.fxRates){
+    if(d.fxRates.usdSgdRate>0) usdSgdRate = d.fxRates.usdSgdRate;
+    if(d.fxRates.thbSgdRate>0) thbSgdRate = d.fxRates.thbSgdRate;
+    if(d.fxRates.eurSgdRate>0) eurSgdRate = d.fxRates.eurSgdRate;
+  }
+  if(d.goalSettings) Object.assign(goalSettings, d.goalSettings);
+}
+
+function saveAll(){
+  try{
+    // 1. Always write to localStorage (instant, same browser)
+    const payload = buildDataPayload();
+    localStorage.setItem('pf2_v2', JSON.stringify(payload));
+    // Legacy keys so older versions still work
+    localStorage.setItem('pf2_stocks', JSON.stringify(stocks));
+    localStorage.setItem('pf2_assets', JSON.stringify(assets));
+    localStorage.setItem('pf2_snaps',  JSON.stringify(snapshots));
+    localStorage.setItem('pf2_fxrate', String(usdSgdRate));
+    localStorage.setItem('pf2_thbrate',String(thbSgdRate));
+    localStorage.setItem('pf2_eurrate',String(eurSgdRate));
+    localStorage.setItem('pf2_goal',   JSON.stringify(goalSettings));
+    localStorage.setItem('pf2_lastSave', new Date().toISOString());
+
+    const b=document.getElementById('saveBadge');
+    if(b){ b.style.opacity=1; setTimeout(()=>b.style.opacity=0,2000); }
+  }catch(e){ console.error('saveAll error',e); }
+}
+
+// Export JSON file — call this to create the portable companion file
+function exportData(silent=false){
+  const payload = buildDataPayload();
+  payload.exportedAt = new Date().toISOString();
+  const data = JSON.stringify(payload, null, 2);
+  const blob = new Blob([data], {type:'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url;
+  a.download = 'finance-data.json'; // fixed name so it replaces the previous one
+  a.click();
+  URL.revokeObjectURL(url);
+  localStorage.setItem('pf2_lastExport', new Date().toISOString());
+  if(!silent) updateBackupBanner();
+}
+
+// Import JSON file — loads a previously exported finance-data.json
+function importData(){
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.json';
+  inp.onchange = e => {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try{
+        const d = JSON.parse(ev.target.result);
+        applyDataPayload(d);
+        normaliseStocks();
+        mergeMissingSeedStocks();
+        saveAll(); render();
+        localStorage.setItem('pf2_lastExport', new Date().toISOString());
+        updateBackupBanner();
+        alert('✓ Data loaded from file. Your dashboard is now up to date.');
+      }catch(e){ alert('Could not read file — make sure it is a finance-data.json exported from this dashboard.'); }
+    };
+    reader.readAsText(file);
+  };
+  inp.click();
+}
+
+function loadAll(){
+  try{
+    // Try the unified v2 payload first
+    const v2 = localStorage.getItem('pf2_v2');
+    if(v2){
+      const d = JSON.parse(v2);
+      applyDataPayload(d);
+    } else {
+      // Fall back to legacy individual keys
+      const s  = localStorage.getItem('pf2_stocks');
+      const a  = localStorage.getItem('pf2_assets');
+      const sn = localStorage.getItem('pf2_snaps');
+      const fx = localStorage.getItem('pf2_fxrate');
+      const thb= localStorage.getItem('pf2_thbrate');
+      const eur= localStorage.getItem('pf2_eurrate');
+      const gs = localStorage.getItem('pf2_goal');
+      if(s)  stocks    = JSON.parse(s);   else stocks    = SEED_STOCKS;
+      if(a)  assets    = JSON.parse(a);   else assets    = SEED_ASSETS;
+      if(sn) snapshots = JSON.parse(sn);
+      if(fx){ const v=parseFloat(fx);  if(v>0) usdSgdRate=v; }
+      if(thb){ const v=parseFloat(thb); if(v>0) thbSgdRate=v; }
+      if(eur){ const v=parseFloat(eur); if(v>0) eurSgdRate=v; }
+      if(gs){ try{ Object.assign(goalSettings,JSON.parse(gs)); }catch(e){} }
+    }
+    normaliseStocks();
+    mergeMissingSeedStocks();
+  }catch(e){ stocks=SEED_STOCKS; assets=SEED_ASSETS; console.error('loadAll error',e); }
+}
+
+function normaliseStocks(){
+  stocks = stocks.map(st => {
+    let u = {
+      ...st,
+      exchange: String(st.exchange||'US').toUpperCase().trim()==='SG' ? 'SG' : 'US'
+    };
+    if(!u.nameLocked && TICKER_NAME_LOCK[u.ticker]) u.companyName = TICKER_NAME_LOCK[u.ticker];
+    if(u.ticker==='SET EUR' && u.currency!=='EUR'){ u.currency='EUR'; u.lastPrice=null; }
+    return u;
+  });
+}
+
+// ── Backup age banner ────────────────────────────────────────────────
+function updateBackupBanner(){
+  const banner = document.getElementById('backup-banner');
+  if(!banner) return;
+  const lastExport = localStorage.getItem('pf2_lastExport');
+  if(!lastExport){ banner.style.display='flex'; banner.dataset.state='never'; _setBannerText(banner,'never'); return; }
+  const ageHours = (Date.now() - new Date(lastExport).getTime()) / 3_600_000;
+  if(ageHours > 24){ banner.style.display='flex'; banner.dataset.state='old'; _setBannerText(banner,'old',ageHours); }
+  else { banner.style.display='none'; }
+}
+function _setBannerText(banner, state, ageHours){
+  const msg = state==='never'
+    ? '📂 Your data only exists in this browser. <strong>Export finance-data.json</strong> and keep it next to the HTML file so your iPhone and other devices stay in sync.'
+    : `⚠ Last backup was ${Math.round(ageHours)}h ago. Export an updated <strong>finance-data.json</strong> to keep your devices in sync.`;
+  banner.querySelector('#banner-msg').innerHTML = msg;
+}
+
+// Inject any seed stocks not already present (matched by ticker+exchange).
+// Preserves all existing data — only adds, never removes or overwrites.
+function mergeMissingSeedStocks(){
+  let added=false;
+  for(const seed of SEED_STOCKS){
+    const exists=stocks.some(s=>s.ticker===seed.ticker && s.exchange===seed.exchange);
+    if(!exists){
+      stocks.push({...seed, id:uid()}); // fresh id to avoid collisions
+      added=true;
+    }
+  }
+  if(added) saveAll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SEED DATA
+// ════════════════════════════════════════════════════════════════════
+const SEED_STOCKS=[
+  // US Portfolio
+  {id:uid(),ticker:'AAPL',exchange:'US',companyName:'Apple Inc.',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'AMZN',exchange:'US',companyName:'Amazon.com Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'ASML',exchange:'US',companyName:'ASML Holding NV',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'BXSL',exchange:'US',companyName:'Blackstone Secured Lending Fund',currency:'USD',units:300,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'CPRT',exchange:'US',companyName:'Copart Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'ELV',exchange:'US',companyName:'Elevance Health Inc.',currency:'USD',units:25,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'FICO',exchange:'US',companyName:'Fair Isaac Corporation',currency:'USD',units:5,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'LVMUY',exchange:'US',companyName:'LVMH Moët Hennessy (ADR)',currency:'USD',units:20,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'MA',exchange:'US',companyName:'Mastercard Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'MBGL',exchange:'US',companyName:'Mobility Global Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'MELI',exchange:'US',companyName:'MercadoLibre Inc.',currency:'USD',units:10,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'META',exchange:'US',companyName:'Meta Platforms Inc.',currency:'USD',units:60,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'MSFT',exchange:'US',companyName:'Microsoft Corporation',currency:'USD',units:100,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'NVDA',exchange:'US',companyName:'NVIDIA Corporation',currency:'USD',units:110,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'PANW',exchange:'US',companyName:'Palo Alto Networks Inc.',currency:'USD',units:40,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'PLTR',exchange:'US',companyName:'Palantir Technologies Inc.',currency:'USD',units:80,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'SPGI',exchange:'US',companyName:'S&P Global Inc.',currency:'USD',units:50,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'TMO',exchange:'US',companyName:'Thermo Fisher Scientific Inc.',currency:'USD',units:20,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'UNH',exchange:'US',companyName:'UnitedHealth Group Inc.',currency:'USD',units:25,lastPrice:null,lastChange:null,lastUpdated:null},
+  // SGX Portfolio
+  {id:uid(),ticker:'SET EUR',exchange:'SG',companyName:'Stoneweg Europe Stapled Trust',currency:'EUR',units:4000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'A17U',exchange:'SG',companyName:'CapitaLand Integrated Commercial Trust',currency:'SGD',units:1000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'J69U',exchange:'SG',companyName:'Frasers Logistics & Commercial Trust',currency:'SGD',units:5000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'M44U',exchange:'SG',companyName:'Mapletree Industrial Trust',currency:'SGD',units:5000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'O39',exchange:'SG',companyName:'OCBC Bank',currency:'SGD',units:1000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'U11',exchange:'SG',companyName:'United Overseas Bank (UOB)',currency:'SGD',units:300,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'C38U',exchange:'SG',companyName:'CapitaLand Ascendas REIT',currency:'SGD',units:4000,lastPrice:null,lastChange:null,lastUpdated:null},
+  {id:uid(),ticker:'BWCU',exchange:'SG',companyName:'Nikko AM-StraitsTrading Asia ex Japan REIT ETF',currency:'SGD',units:10000,lastPrice:null,lastChange:null,lastUpdated:null},
+];
+const SEED_ASSETS=[
+  // Cash
+  {id:uid(),name:'OCBC SG',category:'Cash',value:71212,isLiability:false,origCurrency:'SGD',origValue:71212},
+  {id:uid(),name:'Citi SG',category:'Cash',value:21972,isLiability:false,origCurrency:'SGD',origValue:21972},
+  {id:uid(),name:'UOB TH',category:'Cash',value:Math.round(1524259/22.4),isLiability:false,origCurrency:'THB',origValue:1524259},
+  // CPF
+  {id:uid(),name:'CPF Ordinary Account',category:'CPF',value:109000,isLiability:false,origCurrency:'SGD',origValue:109000},
+  {id:uid(),name:'CPF Special Account',category:'CPF',value:133000,isLiability:false,origCurrency:'SGD',origValue:133000},
+  // Property
+  {id:uid(),name:'Citylights',category:'Property',value:1300000,isLiability:false,origCurrency:'SGD',origValue:1300000},
+  {id:uid(),name:'Mortgage outstanding',category:'Property',value:748000,isLiability:true,origCurrency:'SGD',origValue:748000},
+  {id:uid(),name:'LPN Pinklao 2',category:'Property',value:Math.round(2220000/22.4),isLiability:false,origCurrency:'THB',origValue:2220000},
+  // Insurance
+  {id:uid(),name:'Prudential TH',category:'Insurance',value:14500,isLiability:false,origCurrency:'SGD',origValue:14500},
+];
+
+// ════════════════════════════════════════════════════════════════════
+// PRICE FETCHING
+// ════════════════════════════════════════════════════════════════════
+// ── Multi-proxy fetch engine ─────────────────────────────────────────
+// Rotates through proxies, retries failed tickers, adds jitter delay
+// to avoid rate-limiting. Google Finance scraped as last-resort fallback.
+
+const PROXIES = [
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Cross-browser fetch with timeout.
+// Cache-busting is added to the PROXY wrapper URL only — Yahoo rejects unknown
+// params and returns stale data when they appear in the Yahoo URL itself.
+function fetchWithDeadline(url, ms=6000) {
+  // Bust the browser/proxy cache by making each proxy URL unique
+  const bust = `_t=${Date.now()}`;
+  const bustUrl = url.includes('?') ? `${url}&${bust}` : `${url}?${bust}`;
+  return Promise.race([
+    fetch(bustUrl),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
+}
+
+// Wrap a Yahoo URL in a proxy with effective cache-busting.
+// Key insight: allorigins caches by the value of its ?url= parameter.
+// So the bust timestamp must be INSIDE the Yahoo URL (as an extra param),
+// not appended after it on the proxy URL. We use a harmless param name
+// that Yahoo's API silently ignores but allorigins treats as a cache miss.
+function proxyWrap(proxyFn, yahooUrl, ms=6000) {
+  const bust = `&_b=${Date.now()}`;
+  const bustYahooUrl = yahooUrl + bust;
+  const proxied = proxyFn(bustYahooUrl);
+  return Promise.race([
+    fetch(proxied),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
+}
+
+// Build Yahoo Finance ticker symbol
+function yahooSymbol(st) {
+  if (st.exchange !== 'SG') return st.ticker;
+  const t = st.ticker.trim();
+  if (t.endsWith('.SI')) return t;
+  // "SET EUR" is the Euro counter of Stoneweg Europe Stapled Trust — Yahoo ticker is SET.SI
+  if (t === 'SET EUR') return 'SET.SI';
+  return t + '.SI';
+}
+
+const TICKER_NAME_LOCK = {
+  'MBGL': 'Mobility Global Inc.',
+  'SET EUR': 'Stoneweg Europe Stapled Trust',
+};
+
+// Try Yahoo v8 chart endpoint
+async function tryYahooProxy(proxyFn, symbol) {
+  const hosts = ['query1', 'query2'];
+  let lastErr;
+  for (const host of hosts) {
+    try {
+      const yahooUrl = `https://${host}.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
+      const r = await proxyWrap(proxyFn, yahooUrl, 5000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
+      const d = JSON.parse(text);
+      const meta = d?.chart?.result?.[0]?.meta;
+      if (!meta || !meta.regularMarketPrice) throw new Error('No price');
+      const prev = meta.chartPreviousClose || meta.previousClose;
+      return {
+        price: meta.regularMarketPrice,
+        change: prev ? ((meta.regularMarketPrice - prev) / prev * 100) : null,
+        currency: meta.currency || 'USD',
+        longName: meta.longName || meta.shortName || symbol,
+        source: 'Yahoo',
+      };
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+// Try Yahoo v7 quote endpoint — primary source, returns true current price
+// including after-hours and pre-market when markets are closed
+async function tryYahooV7(proxyFn, symbol) {
+  const fields = 'regularMarketPrice,regularMarketPreviousClose,postMarketPrice,preMarketPrice,longName,shortName,currency,marketState';
+  const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&fields=${fields}`;
+  const r = await proxyWrap(proxyFn, yahooUrl, 5000);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const text = await r.text();
+  if (!text || text[0] === '<') throw new Error('Blocked');
+  const d = JSON.parse(text);
+  const q = d?.quoteResponse?.result?.[0];
+  if (!q || !q.regularMarketPrice) throw new Error('No price');
+  const prev = q.regularMarketPreviousClose;
+  // Use the most current price available: post-market > regular > pre-market
+  const livePrice = q.postMarketPrice || q.regularMarketPrice || q.preMarketPrice;
+  // Change % is always vs previous close using regular market price
+  const change = prev ? ((q.regularMarketPrice - prev) / prev * 100) : null;
+  return {
+    price: livePrice,
+    change,
+    currency: q.currency || 'USD',
+    longName: q.longName || q.shortName || symbol,
+    source: 'Yahoo',
+  };
+}
+
+// Google Finance scrape fallback
+async function tryGoogleFinance(st) {
+  const exchanges = st.exchange === 'SG' ? ['SGX'] : ['NASDAQ','NYSE','NYSEARCA','NYSEMKT'];
+  const proxyFn = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  for (const exch of exchanges) {
+    try {
+      const gUrl = `https://www.google.com/finance/quote/${encodeURIComponent(st.ticker)}:${exch}`;
+      const r = await proxyWrap(proxyFn, gUrl, 7000);
+      if (!r.ok) continue;
+      const html = await r.text();
+      const m = html.match(/class="YMlKec fxKbKc"[^>]*>([^<]+)</);
+      if (!m) continue;
+      const price = parseFloat(m[1].replace(/[^0-9.]/g, ''));
+      if (!price) continue;
+      const changeM = html.match(/([+-]?\d+\.?\d*)\s*\(([+-]?\d+\.?\d*)%\)/);
+      const changePct = changeM ? parseFloat(changeM[2]) : null;
+      const currM = html.match(/data-currency-code="([A-Z]{3})"/);
+      const currency = currM ? currM[1] : (st.exchange === 'SG' ? 'SGD' : 'USD');
+      return { price, change: changePct, currency, longName: st.companyName, source: 'Google' };
+    } catch(e) { continue; }
+  }
+  throw new Error('Google also failed');
+}
+
+// Fetch a single quote — tries v7 first (most accurate current price),
+// then v8 chart as fallback, then Google as last resort
+async function fetchQuote(st) {
+  const symbol = yahooSymbol(st);
+  for (let pi = 0; pi < PROXIES.length; pi++) {
+    try { return await tryYahooV7(PROXIES[pi], symbol); } catch(e) {}
+    try { return await tryYahooProxy(PROXIES[pi], symbol); } catch(e) {}
+  }
+  try { return await tryGoogleFinance(st); } catch(e) {}
+  throw new Error('All sources failed for ' + st.ticker);
+}
+
+// Apply a fetched result back to the stocks array
+function applyQuote(id, q) {
+  const i = stocks.findIndex(x => x.id === id);
+  if (i < 0) return;
+  stocks[i].lastPrice = q.price;
+  stocks[i].lastChange = q.change;
+  stocks[i].lastUpdated = new Date().toISOString();
+  stocks[i].priceSource = q.source;
+  // Name update priority: 1) nameLocked (user override wins always) 2) TICKER_NAME_LOCK (hardcoded) 3) API name
+  if (!stocks[i].nameLocked) {
+    if (TICKER_NAME_LOCK[stocks[i].ticker]) {
+      stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
+    } else if (q.longName && q.longName !== stocks[i].ticker) {
+      stocks[i].companyName = q.longName;
+    }
+  }
+}
+
+// Refresh prices
+// - If user clicked the button explicitly: refresh ALL stocks (force=true by default when called from button)
+// - If called on auto-load for missing prices: only fetch missing ones
+async function refreshAllPrices(forceAll=false) {
+  const btn = document.getElementById('refreshBtn');
+  if (!btn) return;
+  btn.disabled = true;
+
+  const missing = stocks.filter(s => !s.lastPrice);
+  // Force-refresh all when user explicitly clicks; only fetch missing on auto-load
+  const toFetch = (forceAll || missing.length === 0) ? [...stocks] : missing;
+  const total = toFetch.length;
+  let done = 0;
+  const failed = [];
+  const BATCH = 4;         // slightly smaller batch — more polite on mobile networks
+  const STOCK_TIMEOUT = 12000; // longer timeout for slower mobile connections
+
+  btn.textContent = `↻ 0/${total}`;
+
+  async function fetchWithTimeout(st) {
+    return Promise.race([
+      fetchQuote(st),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), STOCK_TIMEOUT))
+    ]);
+  }
+
+  // First pass — parallel batches
+  for (let i = 0; i < toFetch.length; i += BATCH) {
+    const batch = toFetch.slice(i, i + BATCH);
+    await Promise.all(batch.map(async st => {
+      try {
+        const q = await fetchWithTimeout(st);
+        applyQuote(st.id, q);
+      } catch(e) {
+        console.warn('Fetch failed:', st.ticker, e.message);
+        failed.push(st);
+      }
+      done++;
+      const b = document.getElementById('refreshBtn');
+      if (b) b.textContent = `↻ ${done}/${total}`;
+      render();
+    }));
+    if (i + BATCH < toFetch.length) await sleep(200); // slightly longer pause on mobile
+  }
+
+  // Retry pass — sequential, one at a time, longer timeout
+  if (failed.length > 0) {
+    const b = document.getElementById('refreshBtn');
+    if (b) b.textContent = `↻ Retrying ${failed.length}…`;
+    await sleep(1500);
+    for (const st of failed) {
+      const symbol = yahooSymbol(st);
+      for (let pi = 0; pi < PROXIES.length; pi++) {
+        try {
+          const q = await Promise.race([
+            tryYahooProxy(PROXIES[pi], symbol),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 10000))
+          ]);
+          applyQuote(st.id, q);
+          break;
+        } catch(e) { await sleep(300); }
+      }
+      render();
+      await sleep(400);
+    }
+  }
+
+  saveAll(); render();
+  const still = stocks.filter(s => !s.lastPrice).length;
+  const b = document.getElementById('refreshBtn');
+  if (b) {
+    b.disabled = false;
+    b.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
+  }
+}
+
+async function searchYahoo(query){
+  const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0`;
+  for (let pi = 0; pi < PROXIES.length; pi++) {
+    try {
+      const r = await proxyWrap(PROXIES[pi], yahooUrl, 5000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
+      const d = JSON.parse(text);
+      return (d?.quotes||[]).filter(q => q.quoteType==='EQUITY' || q.quoteType==='ETF');
+    } catch(e) { /* try next proxy */ }
+  }
+  return [];
+}
+
+// ════════════════════════════════════════════════════════════════════
+// COMPUTED TOTALS
+// ════════════════════════════════════════════════════════════════════
+function getAssetValueSGD(a){
+  if(!a.origCurrency || a.origCurrency==='SGD') return a.value;
+  if(a.origCurrency==='THB') return Math.round(a.origValue * thbSgdRate);
+  if(a.origCurrency==='USD') return Math.round(a.origValue * usdSgdRate);
+  if(a.origCurrency==='EUR') return Math.round(a.origValue * eurSgdRate);
+  return a.value;
+}
+
+function getStockValueSGD(st){
+  if(!st.lastPrice) return null;
+  let rate = 1;
+  if(st.currency==='USD' || st.exchange==='US') rate = usdSgdRate;
+  else if(st.currency==='EUR') rate = eurSgdRate;
+  // SGD-priced SGX stocks: rate stays 1
+  return st.lastPrice * st.units * rate;
+}
+
+function computeTotals(){
+  const stockValSGD = stocks.reduce((s,st)=>{ const v=getStockValueSGD(st); return v?s+v:s; },0);
+  const otherAssets = assets.filter(a=>!a.isLiability).reduce((s,a)=>s+getAssetValueSGD(a),0);
+  const totalAssets = stockValSGD + otherAssets;
+  const totalLiab   = assets.filter(a=>a.isLiability).reduce((s,a)=>s+getAssetValueSGD(a),0);
+  const nav = totalAssets - totalLiab;
+  const investable = stockValSGD + (assets.filter(a=>!a.isLiability&&a.category==='Cash').reduce((s,a)=>s+getAssetValueSGD(a),0));
+  const hasAllPrices = stocks.every(s=>s.lastPrice!=null);
+  return {stockValSGD, otherAssets, totalAssets, totalLiab, nav, investable, hasAllPrices};
+}
+
+// ════════════════════════════════════════════════════════════════════
+// TABS
+// ════════════════════════════════════════════════════════════════════
+function switchTab(t){
+  currentTab=t;
+  document.querySelectorAll('.tab').forEach((el,i)=>{
+    const ids=['dashboard','portfolio','assets','history'];
+    el.classList.toggle('active',ids[i]===t);
+  });
+  document.querySelectorAll('.tab-content').forEach(el=>{
+    el.classList.toggle('active',el.id==='view-'+t);
+  });
+  render();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// MODAL — ADD
+// ════════════════════════════════════════════════════════════════════
+function openAddModal(){
+  editAssetId=null; editStockId=null;
+  document.getElementById('modal-title').textContent='Add position';
+  document.getElementById('type-selector').style.display='flex';
+  document.getElementById('f-ticker').value='';
+  document.getElementById('f-units').value='';
+  document.getElementById('search-results').innerHTML='';
+  document.getElementById('stock-fetched').style.display='none';
+  document.getElementById('f-name').value='';
+  document.getElementById('f-value').value='';
+  document.getElementById('f-currency').value='SGD';
+  document.getElementById('f-value-label').textContent='Amount (SGD)';
+  document.getElementById('f-sgd-equiv').style.display='none';
+  document.getElementById('f-liab').checked=false;
+  document.getElementById('submit-btn').textContent='Add';
+  fetchingTicker=null;
+  setModalType('stock');
+  document.getElementById('modal').style.display='flex';
+  setTimeout(()=>document.getElementById('f-ticker').focus(),80);
+}
+
+function onAssetCurrencyChange(){
+  const cur=document.getElementById('f-currency').value;
+  document.getElementById('f-value-label').textContent=`Amount (${cur})`;
+  updateSGDEquiv();
+}
+
+function updateSGDEquiv(){
+  const cur=document.getElementById('f-currency').value;
+  const val=parseFloat(document.getElementById('f-value').value.replace(/,/g,''))||0;
+  const eq=document.getElementById('f-sgd-equiv');
+  if(cur==='SGD'||!val){ eq.style.display='none'; return; }
+  let sgd=0;
+  if(cur==='THB') sgd=Math.round(val*thbSgdRate);
+  else if(cur==='USD') sgd=Math.round(val*usdSgdRate);
+  else if(cur==='EUR') sgd=Math.round(val*eurSgdRate);
+  eq.style.display='block';
+  eq.textContent=`≈ SGD ${sgd.toLocaleString()} at current rate`;
+}
+
+function setModalType(t){
+  modalType=t;
+  document.getElementById('stock-fields').style.display=t==='stock'?'block':'none';
+  document.getElementById('asset-fields').style.display=t==='asset'?'block':'none';
+  document.getElementById('type-btn-stock').style.background=t==='stock'?'var(--text)':'var(--bg)';
+  document.getElementById('type-btn-stock').style.color=t==='stock'?'var(--bg)':'var(--text)';
+  document.getElementById('type-btn-asset').style.background=t==='asset'?'var(--text)':'var(--bg)';
+  document.getElementById('type-btn-asset').style.color=t==='asset'?'var(--bg)':'var(--text)';
+}
+
+function onExchangeChange(){ document.getElementById('search-results').innerHTML=''; document.getElementById('stock-fetched').style.display='none'; fetchingTicker=null; }
+
+function onTickerInput(){
+  clearTimeout(searchDebounce);
+  const v=document.getElementById('f-ticker').value.trim();
+  if(v.length<1){ document.getElementById('search-results').innerHTML=''; return; }
+  searchDebounce=setTimeout(()=>{ if(v.length>=2) searchTicker(); },600);
+}
+
+async function searchTicker(){
+  const raw=document.getElementById('f-ticker').value.trim();
+  if(!raw) return;
+  const exch=document.getElementById('f-exchange').value;
+  const query=raw+(exch==='SG'&&!raw.endsWith('.SI')?'.SI':' '+raw);
+  document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--text3);padding:6px 0">Searching…</div>';
+  document.getElementById('stock-fetched').style.display='none';
+  try{
+    const results=await searchYahoo(raw);
+    if(!results.length){ document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--red);padding:6px 0">No results found. Try a different ticker.</div>'; return; }
+    const html=results.slice(0,6).map(r=>`
+      <div class="search-item" onclick="selectSearchResult('${r.symbol}','${(r.longname||r.shortname||r.symbol).replace(/'/g,"\\'")}','${r.exchange||''}')">
+        <span class="search-ticker">${r.symbol}</span>
+        <span class="search-name">${r.longname||r.shortname||''}</span>
+        <span class="search-exch">${r.exchange||''}</span>
+      </div>`).join('');
+    document.getElementById('search-results').innerHTML=`<div class="search-results">${html}</div>`;
+  }catch(e){
+    document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--red);padding:6px 0">Search failed. Check connection.</div>';
+  }
+}
+
+async function selectSearchResult(ticker,name,exch){
+  document.getElementById('f-ticker').value=ticker;
+  document.getElementById('search-results').innerHTML='';
+  const fetched=document.getElementById('stock-fetched');
+  fetched.style.display='block';
+  fetched.innerHTML='<span style="color:var(--text3)">Fetching price…</span>';
+  fetchingTicker=ticker;
+  const exchange=document.getElementById('f-exchange').value;
+  try{
+    const tempSt={ticker,exchange,companyName:name,currency:exchange==='SG'?'SGD':'USD'};
+    const q=await fetchQuote(tempSt,0);
+    fetchingTicker=ticker;
+    const chg=q.change!=null?`<span style="color:${q.change>=0?'var(--green)':'var(--red)'};margin-left:8px">${q.change>=0?'+':''}${q.change.toFixed(2)}%</span>`:'';
+    const src=q.source?`<span style="font-size:10px;color:var(--text3);margin-left:6px">via ${q.source}</span>`:'';
+    fetched.innerHTML=`
+      <div style="font-weight:600;margin-bottom:3px">${q.longName||name}</div>
+      <div style="color:var(--text2);font-size:12px">${ticker} · ${q.currency}${src}</div>
+      <div style="font-size:15px;font-weight:600;margin-top:6px">${fmtPrice(q.price,q.currency)}${chg}</div>`;
+  }catch(e){
+    fetched.innerHTML=`<div style="color:var(--red);font-size:12px">Could not fetch price for ${ticker}. You can still add it — price will load on next refresh.</div>`;
+  }
+}
+
+async function submitModal(){
+  if(modalType==='stock'){
+    const ticker=document.getElementById('f-ticker').value.trim().toUpperCase();
+    const exchange=document.getElementById('f-exchange').value;
+    const units=parseFloat(document.getElementById('f-units').value)||0;
+    if(!ticker){ document.getElementById('f-ticker').focus(); return; }
+    const btn=document.getElementById('submit-btn');
+    btn.disabled=true; btn.textContent='Adding…';
+    let price=null,change=null,longName=ticker,currency=exchange==='SG'?'SGD':'USD';
+    try{
+      const tempSt={ticker,exchange,companyName:longName,currency};
+      const q=await fetchQuote(tempSt,0);
+      price=q.price; change=q.change; longName=q.longName||ticker; currency=q.currency||currency;
+    }catch(e){ console.warn('Price fetch on add failed:',e.message); }
+    stocks.push({id:uid(),ticker,exchange,companyName:longName,currency,units,lastPrice:price,lastChange:change,lastUpdated:price?new Date().toISOString():null});
+    btn.disabled=false; btn.textContent='Add';
+    closeModal(); saveAll(); render();
+  } else {
+    const name=document.getElementById('f-name').value.trim();
+    const cat=document.getElementById('f-cat').value;
+    const origCurrency=document.getElementById('f-currency').value;
+    const origValue=parseFloat(document.getElementById('f-value').value.replace(/,/g,''))||0;
+    const isLiab=document.getElementById('f-liab').checked;
+    // Convert to SGD for storage
+    let valueSGD=origValue;
+    if(origCurrency==='THB') valueSGD=Math.round(origValue*thbSgdRate);
+    else if(origCurrency==='USD') valueSGD=Math.round(origValue*usdSgdRate);
+    else if(origCurrency==='EUR') valueSGD=Math.round(origValue*eurSgdRate);
+    if(!name){ document.getElementById('f-name').focus(); return; }
+    if(editAssetId){
+      assets=assets.map(a=>a.id===editAssetId?{...a,name,category:cat,value:valueSGD,isLiability:isLiab,origCurrency,origValue}:a);
+    } else {
+      assets.push({id:uid(),name,category:cat,value:valueSGD,isLiability:isLiab,origCurrency,origValue});
+    }
+    closeModal(); saveAll(); render();
+  }
+}
+
+function closeModal(){ document.getElementById('modal').style.display='none'; fetchingTicker=null; document.getElementById('search-results').innerHTML=''; }
+
+// ════════════════════════════════════════════════════════════════════
+// EDIT STOCK MODAL
+// ════════════════════════════════════════════════════════════════════
+function openEditStock(id){
+  const st=stocks.find(x=>x.id===id); if(!st) return;
+  editStockId=id;
+  const valSGD=getStockValueSGD(st);
+  document.getElementById('edit-stock-info').innerHTML=`
+    <div style="font-weight:600">${st.ticker} · ${st.exchange} · ${st.currency}</div>
+    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--text3);font-size:12px;margin-top:4px">Price not yet fetched</div>'}`;
+  document.getElementById('edit-units').value=st.units;
+  document.getElementById('edit-company').value=st.companyName||'';
+  document.getElementById('edit-lock-name').checked=!!(st.nameLocked);
+  document.getElementById('edit-stock-modal').style.display='flex';
+  setTimeout(()=>document.getElementById('edit-units').focus(),60);
+}
+function closeEditStock(){ document.getElementById('edit-stock-modal').style.display='none'; editStockId=null; }
+function submitEditStock(){
+  const units=parseFloat(document.getElementById('edit-units').value)||0;
+  const companyName=document.getElementById('edit-company').value.trim();
+  const nameLocked=document.getElementById('edit-lock-name').checked;
+  stocks=stocks.map(s=>s.id===editStockId?{...s,units,companyName:companyName||s.companyName,nameLocked}:s);
+  closeEditStock(); saveAll(); render();
+}
+function deleteStockConfirm(){
+  if(!confirm('Remove this stock position?')) return;
+  stocks=stocks.filter(s=>s.id!==editStockId);
+  closeEditStock(); saveAll(); render();
+}
+
+function openEditAsset(id){
+  const a=assets.find(x=>x.id===id); if(!a) return;
+  editAssetId=id;
+  document.getElementById('modal-title').textContent='Edit asset';
+  document.getElementById('type-selector').style.display='none';
+  document.getElementById('f-name').value=a.name;
+  document.getElementById('f-cat').value=a.category;
+  const cur=a.origCurrency||'SGD';
+  document.getElementById('f-currency').value=cur;
+  document.getElementById('f-value-label').textContent=`Amount (${cur})`;
+  document.getElementById('f-value').value=a.origValue!=null?a.origValue:a.value;
+  document.getElementById('f-sgd-equiv').style.display='none';
+  document.getElementById('f-liab').checked=a.isLiability;
+  document.getElementById('submit-btn').textContent='Save';
+  setModalType('asset');
+  document.getElementById('modal').style.display='flex';
+}
+function deleteAsset(id){
+  if(!confirm('Remove this asset?')) return;
+  assets=assets.filter(a=>a.id!==id); saveAll(); render();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SNAPSHOTS
+// ════════════════════════════════════════════════════════════════════
+function recordSnapshot(){
+  const note=document.getElementById('snap-note')?document.getElementById('snap-note').value.trim():'';
+  const t=computeTotals();
+  // Capture allocation breakdown for hover tooltip
+  const alloc={};
+  stocks.forEach(st=>{const v=getStockValueSGD(st);if(v)alloc['Stocks']=(alloc['Stocks']||0)+v;});
+  assets.filter(a=>!a.isLiability).forEach(a=>{alloc[a.category]=(alloc[a.category]||0)+getAssetValueSGD(a);});
+  snapshots.push({date:todayStr(),totalAssets:t.totalAssets,totalLiab:t.totalLiab,nav:t.nav,investable:t.investable,stockValue:t.stockValSGD,note,alloc});
+  snapshots.sort((a,b)=>a.date.localeCompare(b.date));
+  showSnapForm=false; saveAll(); render();
+}
+function deleteSnapshot(idx){ if(!confirm('Delete snapshot?'))return; snapshots.splice(idx,1); saveAll(); render(); }
+
+// ════════════════════════════════════════════════════════════════════
+// CHARTS
+// ════════════════════════════════════════════════════════════════════
+function buildTrendChart(snaps, chartId='trendChart'){
+  if(!snaps.length) return '<p class="empty">No snapshots yet. Record your first to start tracking.</p>';
+  const W=580,H=190,PL=64,PR=30,PT=14,PB=40;
+  const gW=W-PL-PR,gH=H-PT-PB;
+  const navV=snaps.map(s=>s.nav),totV=snaps.map(s=>s.totalAssets);
+  const {nestEgg} = computeGoal();
+  const minV=Math.min(0,...navV),maxV=Math.max(nestEgg,...totV);
+  const rng=maxV-minV||1;
+  const tx=i=>PL+(snaps.length===1?gW/2:(i/(snaps.length-1))*gW);
+  const ty=v=>PT+gH-((v-minV)/rng)*gH;
+  const npts=snaps.map((s,i)=>`${tx(i).toFixed(1)},${ty(s.nav).toFixed(1)}`).join('L');
+  const tpts=snaps.map((s,i)=>`${tx(i).toFixed(1)},${ty(s.totalAssets).toFixed(1)}`).join('L');
+  const goalY=ty(nestEgg).toFixed(1);
+  const ticks=[0,.25,.5,.75,1].map(t=>minV+t*rng);
+
+  let grid='',yl='';
+  ticks.forEach(v=>{
+    const y=ty(v).toFixed(1);
+    grid+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+    yl+=`<text x="${PL-6}" y="${(+y+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;
+  });
+
+  const maxLabels=Math.max(1,Math.floor(gW/58));
+  const step=snaps.length<=maxLabels?1:Math.ceil(snaps.length/maxLabels);
+  let xl='';
+  snaps.forEach((s,i)=>{
+    if(i!==0&&i!==snaps.length-1&&i%step!==0) return;
+    xl+=`<text x="${tx(i).toFixed(1)}" y="${H-PB+14}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.date}</text>`;
+  });
+
+  // Large invisible hit-area circles so hover is easy to trigger
+  let dots='';
+  snaps.forEach((s,i)=>{
+    // Visible dots
+    dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.nav).toFixed(1)}" r="4" fill="var(--blue)" pointer-events="none"/>`;
+    dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.totalAssets).toFixed(1)}" r="3" fill="var(--green)" pointer-events="none"/>`;
+    // Large transparent hit area centred between the two dots — catches hover anywhere near either
+    const midY=((ty(s.nav)+ty(s.totalAssets))/2).toFixed(1);
+    dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${midY}" r="18" fill="transparent" style="cursor:pointer"
+      onmouseenter="showChartTip('${chartId}',${i},this)"
+      onmouseleave="scheduleHideTip('${chartId}')"
+      onclick="toggleSnapDetail('${chartId}',${i})"/>`;
+  });
+
+  return `
+  <div style="display:flex;flex-wrap:wrap;gap:7px 13px;margin-bottom:9px;font-size:12px;color:var(--text2)">
+    <span style="display:flex;align-items:center;gap:5px"><span style="width:16px;height:2px;background:var(--blue);display:inline-block"></span>Net worth</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--green)" stroke-width="2" stroke-dasharray="4 2"/></svg>Total assets</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>$3M goal</span>
+    <span style="color:var(--text3);margin-left:4px">· hover or click dots for details</span>
+  </div>
+  <div style="position:relative">
+    <!-- Floating hover tooltip — stays visible when mouse moves over it -->
+    <div id="${chartId}-tip"
+      style="display:none;position:absolute;background:var(--bg);border:0.5px solid var(--border2);border-radius:var(--radius-sm);padding:8px 10px;font-size:11px;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:170px;pointer-events:auto;"
+      onmouseenter="cancelHideTip('${chartId}')"
+      onmouseleave="scheduleHideTip('${chartId}')"></div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" id="${chartId}-svg">
+      ${grid}${yl}
+      <line x1="${PL}" y1="${goalY}" x2="${W-PR}" y2="${goalY}" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      ${snaps.length>1?`<path d="M${tpts}" fill="none" stroke="var(--green)" stroke-width="2" stroke-dasharray="5 3" stroke-linejoin="round"/>`:''}
+      ${snaps.length>1?`<path d="M${npts}" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linejoin="round"/>`:''}
+      ${dots}${xl}
+    </svg>
+  </div>
+  <!-- Click-to-expand detail panel below chart -->
+  <div id="${chartId}-detail" style="display:none;margin-top:10px;border-top:0.5px solid var(--border);padding-top:10px;"></div>`;
+}
+
+// Tip hide timer — delayed so cursor can move from dot to tooltip
+const _tipTimers={};
+function scheduleHideTip(chartId){
+  _tipTimers[chartId]=setTimeout(()=>{
+    const t=document.getElementById(chartId+'-tip');
+    if(t) t.style.display='none';
+  },300);
+}
+function cancelHideTip(chartId){
+  clearTimeout(_tipTimers[chartId]);
+}
+
+function showChartTip(chartId, idx, dotEl){
+  cancelHideTip(chartId);
+  const s=snapshots[idx]; if(!s) return;
+  const tip=document.getElementById(chartId+'-tip'); if(!tip) return;
+
+  tip.innerHTML=buildSnapSummaryHtml(s, idx, false);
+  tip.style.display='block';
+
+  // Position relative to SVG container
+  const svg=document.getElementById(chartId+'-svg');
+  if(!svg) return;
+  const svgRect=svg.getBoundingClientRect();
+  const dotRect=dotEl.getBoundingClientRect();
+  const wrap=svg.parentElement;
+  const wrapRect=wrap.getBoundingClientRect();
+
+  // Dot position relative to wrap
+  const dotX=dotRect.left+dotRect.width/2-wrapRect.left;
+  const dotY=dotRect.top-wrapRect.top;
+
+  // Place tooltip above the dot; flip below if not enough space
+  const tipW=190, tipH=tip.offsetHeight||120;
+  let left=dotX-tipW/2;
+  let top=dotY-tipH-10;
+  if(top<0) top=dotY+30;
+  if(left<0) left=0;
+  if(left+tipW>wrapRect.width) left=wrapRect.width-tipW;
+  tip.style.left=left+'px';
+  tip.style.top=top+'px';
+}
+
+function toggleSnapDetail(chartId, idx){
+  const panel=document.getElementById(chartId+'-detail'); if(!panel) return;
+  const tip=document.getElementById(chartId+'-tip'); if(tip) tip.style.display='none';
+  const s=snapshots[idx]; if(!s) return;
+
+  // If already showing same snapshot, collapse
+  if(panel.dataset.idx===String(idx)&&panel.style.display!=='none'){
+    panel.style.display='none'; panel.dataset.idx='';
+    return;
+  }
+  panel.dataset.idx=String(idx);
+  panel.innerHTML=buildSnapDetailHtml(s, idx);
+  panel.style.display='block';
+}
+
+function buildSnapSummaryHtml(s, idx, showDelete){
+  let allocHtml='';
+  if(s.alloc){
+    const grand=Object.values(s.alloc).reduce((a,b)=>a+b,0)||1;
+    allocHtml='<div style="border-top:0.5px solid var(--border);margin-top:5px;padding-top:5px">';
+    Object.entries(s.alloc).sort((a,b)=>b[1]-a[1]).forEach(([cat,v])=>{
+      allocHtml+=`<div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:2px">
+        <span style="color:var(--text2)">${cat}</span>
+        <span style="font-weight:500">${fmtK(v)} <span style="color:var(--text3)">(${Math.round(v/grand*100)}%)</span></span>
+      </div>`;
+    });
+    allocHtml+='</div>';
+  }
+  return `
+    <div style="font-weight:600;margin-bottom:4px">${s.date}${s.note?` <span style="color:var(--text2);font-weight:400">· ${s.note}</span>`:''}</div>
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:2px">
+      <span style="color:var(--text2)">Total assets</span><span style="font-weight:600;color:var(--green)">${fmtK(s.totalAssets)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:2px">
+      <span style="color:var(--text2)">Liabilities</span><span style="font-weight:500;color:var(--red)">${fmtK(s.totalLiab||0)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;gap:10px">
+      <span style="color:var(--text2)">Net worth</span><span style="font-weight:600;color:var(--blue)">${fmtK(s.nav)}</span>
+    </div>
+    ${allocHtml}
+    <div style="margin-top:5px;font-size:10px;color:var(--text3)">Click dot to expand full table ↓</div>`;
+}
+
+function buildSnapDetailHtml(s, idx){
+  // Allocation table
+  let allocRows='<p style="font-size:12px;color:var(--text3);margin:0">No allocation data for this snapshot (taken before this feature was added).</p>';
+  if(s.alloc){
+    const grand=Object.values(s.alloc).reduce((a,b)=>a+b,0)||1;
+    const rows=Object.entries(s.alloc).sort((a,b)=>b[1]-a[1]).map(([cat,v])=>`
+      <tr>
+        <td style="padding:5px 8px;font-size:13px">${cat}</td>
+        <td style="padding:5px 8px;text-align:right;font-weight:500;font-size:13px">${fmtK(v)}</td>
+        <td style="padding:5px 8px;text-align:right;font-size:12px;color:var(--text2)">${Math.round(v/grand*100)}%</td>
+      </tr>`).join('');
+    allocRows=`<table style="width:100%;border-collapse:collapse">
+      <thead><tr style="border-bottom:0.5px solid var(--border)">
+        <th style="text-align:left;padding:4px 8px;font-size:11px;color:var(--text3);font-weight:500">Category</th>
+        <th style="text-align:right;padding:4px 8px;font-size:11px;color:var(--text3);font-weight:500">Value (SGD)</th>
+        <th style="text-align:right;padding:4px 8px;font-size:11px;color:var(--text3);font-weight:500">Share</th>
+      </tr></thead>
+      <tbody>${rows}
+        <tr style="border-top:0.5px solid var(--border)">
+          <td style="padding:5px 8px;font-size:13px;font-weight:600">Total assets</td>
+          <td style="padding:5px 8px;text-align:right;font-weight:600;font-size:13px;color:var(--green)">${fmtK(s.totalAssets)}</td>
+          <td style="padding:5px 8px"></td>
+        </tr>
+        <tr>
+          <td style="padding:5px 8px;font-size:13px;color:var(--red)">Liabilities</td>
+          <td style="padding:5px 8px;text-align:right;font-size:13px;color:var(--red)">−${fmtK(s.totalLiab||0)}</td>
+          <td></td>
+        </tr>
+        <tr style="border-top:0.5px solid var(--border)">
+          <td style="padding:5px 8px;font-size:13px;font-weight:600">Net worth</td>
+          <td style="padding:5px 8px;text-align:right;font-weight:600;font-size:13px;color:var(--blue)">${fmtK(s.nav)}</td>
+          <td></td>
+        </tr>
+      </tbody></table>`;
+  }
+  return `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+      <div>
+        <span style="font-size:14px;font-weight:600">${s.date}</span>
+        ${s.note?`<span style="font-size:12px;color:var(--text2);margin-left:8px">${s.note}</span>`:''}
+      </div>
+      <button class="btn btn-sm btn-danger" onclick="deleteSnapshotFromChart(${idx})">🗑 Delete this snapshot</button>
+    </div>
+    ${allocRows}`;
+}
+
+function deleteSnapshotFromChart(idx){
+  if(!confirm('Delete this snapshot?')) return;
+  snapshots.splice(idx,1);
+  saveAll(); render();
+}
+
+function buildAllocBar(t){
+  const cats={};
+  stocks.forEach(st=>{const v=getStockValueSGD(st);if(v)cats['Stocks']=(cats['Stocks']||0)+v;});
+  assets.filter(a=>!a.isLiability).forEach(a=>{cats[a.category]=(cats[a.category]||0)+getAssetValueSGD(a);});
+  const grand=Object.values(cats).reduce((s,v)=>s+v,0);
+  if(!grand) return '';
+  const entries=Object.entries(cats).sort((a,b)=>b[1]-a[1]);
+  const segs=entries.map(([c,v])=>`<div class="alloc-seg" style="width:${(v/grand*100).toFixed(1)}%;background:${CAT_COLOR[c]||'#888'}" title="${c}: ${fmtK(v)}"></div>`).join('');
+  const leg=entries.map(([c,v])=>`<div class="alloc-item"><span class="alloc-dot" style="background:${CAT_COLOR[c]||'#888'}"></span><span style="color:var(--text2)">${c}</span><span style="font-weight:500">${fmtK(v)}</span><span style="color:var(--text3)">(${Math.round(v/grand*100)}%)</span></div>`).join('');
+  return `<div class="alloc-track">${segs}</div><div class="alloc-legend">${leg}</div>`;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// FX RATE
+// ════════════════════════════════════════════════════════════════════
+function onFxRateChange(val){ const v=parseFloat(val); if(v>0&&v<5){usdSgdRate=v;saveAll();render();} }
+function onEurRateChange(val){ const v=parseFloat(val); if(v>0&&v<5){eurSgdRate=v;saveAll();render();} }
+function onThbRateChange(val){ const v=parseFloat(val); if(v>0&&v<1){thbSgdRate=v;saveAll();render();} }
+
+async function fetchLiveFxRate(){
+  const btn=event.target;
+  btn.disabled=true; btn.textContent='↻ Fetching…';
+  try{
+    const pairs=[
+      {ticker:'USDSGD=X',exchange:'US',companyName:'USD/SGD',currency:'USD'},
+      {ticker:'EURSGD=X',exchange:'US',companyName:'EUR/SGD',currency:'USD'},
+      {ticker:'THBSGD=X',exchange:'US',companyName:'THB/SGD',currency:'USD'},
+    ];
+    const results=await Promise.allSettled(pairs.map(st=>fetchQuote(st)));
+    if(results[0].status==='fulfilled'&&results[0].value.price>0) usdSgdRate=Math.round(results[0].value.price*10000)/10000;
+    if(results[1].status==='fulfilled'&&results[1].value.price>0) eurSgdRate=Math.round(results[1].value.price*10000)/10000;
+    if(results[2].status==='fulfilled'&&results[2].value.price>0) thbSgdRate=Math.round(results[2].value.price*100000)/100000;
+    saveAll(); render();
+  }catch(e){ alert('Could not fetch live rates. Please enter manually.'); }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// GOAL SETTINGS
+// ════════════════════════════════════════════════════════════════════
+function updateGoal(key, val){
+  goalSettings[key] = val;
+  saveAll();
+  // Re-render only the output metrics and progress bar, not the whole dashboard
+  // (full re-render would reset slider positions mid-drag)
+  _refreshGoalOutputs();
+}
+
+function _refreshGoalOutputs(){
+  const t = computeTotals();
+  const {nestEgg, retireYear} = computeGoal();
+  const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
+  const ms = computeMonthlySavingsNeeded(t.nav);
+
+  // Update output metric cards
+  const cards = [
+    ['goal-out-nest', fmtK(nestEgg), `at ${goalSettings.swr}% withdrawal`],
+    ['goal-out-nav',  fmtK(t.nav),   `${pct}% of target`],
+    ['goal-out-save', ms>0?fmtK(ms):'On track!', ms>0?`to close the gap by ${retireYear}`:'no additional savings needed'],
+    ['goal-out-yrs',  goalSettings.yearsToRetire+' yrs', `target year ${retireYear}`],
+  ];
+  cards.forEach(([id, val, sub])=>{
+    const el=document.getElementById(id); if(!el) return;
+    el.children[1].textContent=val;
+    el.children[2].textContent=sub;
+  });
+
+  // Update progress bar
+  const bar=document.getElementById('goal-bar');
+  if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>=100?'var(--green)':'var(--blue)'; }
+  const barPct=document.getElementById('goal-bar-pct');
+  if(barPct){ barPct.textContent=pct+'%'; barPct.style.color=pct>=100?'var(--green)':'var(--text)'; }
+  const barLabels=document.getElementById('goal-bar-labels');
+  if(barLabels) barLabels.innerHTML=`<span>${fmtK(t.nav)} now</span><span>${goalSettings.yearsToRetire} yrs · retire ${retireYear}</span><span>${fmtK(nestEgg)} goal</span>`;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// RENDER FUNCTIONS
+// ════════════════════════════════════════════════════════════════════
+function renderDashboard(){
+  const t=computeTotals();
+  const {nestEgg, retireYear} = computeGoal();
+  const yearsLeft = goalSettings.yearsToRetire;
+  const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
+  const monthlySavings = computeMonthlySavingsNeeded(t.nav);
+  const lastUpdated=stocks.filter(s=>s.lastUpdated).map(s=>s.lastUpdated).sort().pop();
+
+  const snapHtml=showSnapForm?`<div class="snap-form">
+    <p style="font-size:13px;font-weight:500;margin-bottom:5px">Record today's position</p>
+    <p class="snap-preview">
+      Stock portfolio: <strong>${fmtK(t.stockValSGD)}</strong><br>
+      Total assets: <strong>${fmtFull(t.totalAssets)}</strong><br>
+      Net worth: <strong>${fmtFull(t.nav)}</strong><br>
+      Date: <strong>${todayStr()}</strong>
+    </p>
+    <label>Note (optional)</label>
+    <input type="text" id="snap-note" placeholder="e.g. After rebalancing" style="margin-bottom:10px">
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary btn-sm" onclick="recordSnapshot()">Save snapshot</button>
+      <button class="btn btn-sm" onclick="showSnapForm=false;render()">Cancel</button>
+    </div>
+  </div>`:'';
+
+  document.getElementById('view-dashboard').innerHTML=`
+    ${!t.hasAllPrices?`<div style="background:rgba(186,117,23,.1);border:0.5px solid rgba(186,117,23,.3);border-radius:var(--radius-sm);padding:9px 12px;margin-bottom:12px;font-size:12px;color:var(--amber)">⚠ Some stock prices not yet loaded. Click <strong>↻ Refresh prices</strong> to fetch live data.</div>`:''}
+
+    <div class="metric-grid">
+      <div class="metric"><div class="metric-label">Net worth</div><div class="metric-value" style="color:${t.nav>=0?'var(--green)':'var(--red)'}">${fmtK(t.nav)}</div><div class="metric-sub">${fmtFull(t.nav)}</div></div>
+      <div class="metric"><div class="metric-label">Stock portfolio</div><div class="metric-value">${fmtK(t.stockValSGD)}</div><div class="metric-sub">${lastUpdated?'Updated '+tsAgo(lastUpdated):'Not yet fetched'} · USD/SGD ${usdSgdRate.toFixed(4)}</div></div>
+      <div class="metric"><div class="metric-label">Other assets</div><div class="metric-value">${fmtK(t.otherAssets)}</div><div class="metric-sub">CPF, property, cash…</div></div>
+      <div class="metric"><div class="metric-label">Liabilities</div><div class="metric-value" style="color:var(--red)">${fmtK(t.totalLiab)}</div><div class="metric-sub">Mortgage etc.</div></div>
+    </div>
+
+    <!-- ── Dynamic Retirement Planner ── -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:6px">
+        <div class="card-title" style="margin:0">Retirement goal planner</div>
+        <span style="font-size:11px;color:var(--text3)">Adjust assumptions → outputs recalculate instantly</span>
+      </div>
+
+      <!-- Assumption sliders -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 20px;margin-bottom:14px">
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:4px">
+            <span>Monthly income needed</span>
+            <strong style="color:var(--text)" id="lbl-income">S$${goalSettings.monthlyIncome.toLocaleString()}</strong>
+          </div>
+          <input type="range" min="5000" max="30000" step="500" value="${goalSettings.monthlyIncome}"
+            style="width:100%" oninput="updateGoal('monthlyIncome',+this.value);document.getElementById('lbl-income').textContent='S$'+this.value.toLocaleString()">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>$5K</span><span>$30K</span></div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:4px">
+            <span>Years to retirement</span>
+            <strong style="color:var(--text)" id="lbl-years">${goalSettings.yearsToRetire} yrs (${retireYear})</strong>
+          </div>
+          <input type="range" min="1" max="20" step="1" value="${goalSettings.yearsToRetire}"
+            style="width:100%" oninput="updateGoal('yearsToRetire',+this.value);document.getElementById('lbl-years').textContent=this.value+' yrs ('+(${CURRENT_YEAR}+parseInt(this.value))+')'">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>1 yr</span><span>20 yrs</span></div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:4px">
+            <span>Annual investment return</span>
+            <strong style="color:var(--text)" id="lbl-return">${goalSettings.annualReturn.toFixed(1)}%</strong>
+          </div>
+          <input type="range" min="2" max="10" step="0.5" value="${goalSettings.annualReturn}"
+            style="width:100%" oninput="updateGoal('annualReturn',+this.value);document.getElementById('lbl-return').textContent=parseFloat(this.value).toFixed(1)+'%'">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>2%</span><span>10%</span></div>
+        </div>
+
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:4px">
+            <span>Safe withdrawal rate</span>
+            <strong style="color:var(--text)" id="lbl-swr">${goalSettings.swr.toFixed(1)}%</strong>
+          </div>
+          <input type="range" min="2" max="6" step="0.25" value="${goalSettings.swr}"
+            style="width:100%" oninput="updateGoal('swr',+this.value);document.getElementById('lbl-swr').textContent=parseFloat(this.value).toFixed(1)+'%'">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3)"><span>2%</span><span>6%</span></div>
+        </div>
+      </div>
+
+      <!-- Output metrics -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px">
+        <div id="goal-out-nest" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Nest egg target</div>
+          <div style="font-size:18px;font-weight:600;color:var(--text)">${fmtK(nestEgg)}</div>
+          <div style="font-size:11px;color:var(--text3)">at ${goalSettings.swr}% withdrawal</div>
+        </div>
+        <div id="goal-out-nav" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Current net worth</div>
+          <div style="font-size:18px;font-weight:600;color:var(--blue)">${fmtK(t.nav)}</div>
+          <div style="font-size:11px;color:var(--text3)">${pct}% of target</div>
+        </div>
+        <div id="goal-out-save" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Save monthly</div>
+          <div style="font-size:18px;font-weight:600;color:${monthlySavings>0?'var(--amber)':'var(--green)'}">${monthlySavings>0?fmtK(monthlySavings):'On track!'}</div>
+          <div style="font-size:11px;color:var(--text3)">${monthlySavings>0?'to close the gap by '+retireYear:'no additional savings needed'}</div>
+        </div>
+        <div id="goal-out-yrs" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Retire in</div>
+          <div style="font-size:18px;font-weight:600;color:var(--text)">${yearsLeft} yrs</div>
+          <div style="font-size:11px;color:var(--text3)">target year ${retireYear}</div>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
+        <span>Portfolio progress toward ${fmtK(nestEgg)} goal</span>
+        <span id="goal-bar-pct" style="font-weight:600;color:${pct>=100?'var(--green)':'var(--text)'}">${pct}%</span>
+      </div>
+      <div style="background:var(--bg2);border-radius:6px;height:10px;overflow:hidden;margin-bottom:5px">
+        <div id="goal-bar" style="width:${pct}%;height:100%;border-radius:6px;background:${pct>=100?'var(--green)':'var(--blue)'};transition:width .4s"></div>
+      </div>
+      <div id="goal-bar-labels" style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)">
+        <span>${fmtK(t.nav)} now</span>
+        <span>${yearsLeft} yrs · retire ${retireYear}</span>
+        <span>${fmtK(nestEgg)} goal</span>
+      </div>
+    </div>
+
+    <div class="card"><div class="card-title">Asset allocation</div>${buildAllocBar(t)}</div>
+    ${snapHtml}
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px">
+        <div class="card-title" style="margin:0">Net worth trend</div>
+        <button class="btn btn-sm" onclick="showSnapForm=true;render();setTimeout(()=>{const n=document.getElementById('snap-note');if(n)n.focus();},80)">📷 Record snapshot</button>
+      </div>
+      ${buildTrendChart(snapshots)}
+    </div>`;
+}
+
+// Sort state per exchange — persists while portfolio tab is open
+const _sortState = { US: {col:'ticker', dir:1}, SG: {col:'ticker', dir:1} };
+
+function sortStocks(exchange, col){
+  const s = _sortState[exchange];
+  if(s.col === col) s.dir *= -1; // toggle direction
+  else { s.col = col; s.dir = 1; }
+  renderPortfolio();
+}
+
+function renderPortfolio(){
+  const usStocks=stocks.filter(s=>s.exchange==='US');
+  const sgStocks=stocks.filter(s=>s.exchange==='SG');
+  const lastUpdated=stocks.filter(s=>s.lastUpdated).map(s=>s.lastUpdated).sort().pop();
+
+  function sortList(list, exchange){
+    const {col, dir} = _sortState[exchange];
+    return [...list].sort((a,b)=>{
+      let av, bv;
+      if(col==='ticker')   { av=a.ticker;              bv=b.ticker; }
+      else if(col==='name'){ av=a.companyName||'';     bv=b.companyName||''; }
+      else if(col==='units'){ av=a.units||0;           bv=b.units||0; }
+      else if(col==='price'){ av=a.lastPrice||0;       bv=b.lastPrice||0; }
+      else if(col==='value'){ av=getStockValueSGD(a)||0; bv=getStockValueSGD(b)||0; }
+      else if(col==='chg') { av=a.lastChange??-999;    bv=b.lastChange??-999; }
+      if(typeof av==='string') return dir * av.localeCompare(bv);
+      return dir * (av - bv);
+    });
+  }
+
+  function thBtn(exchange, col, label, align='left'){
+    const {col:active, dir} = _sortState[exchange];
+    const isActive = active===col;
+    const arrow = isActive ? (dir===1 ? ' ↑' : ' ↓') : '';
+    return `<th style="cursor:pointer;user-select:none;white-space:nowrap;text-align:${align}"
+      onclick="sortStocks('${exchange}','${col}')"
+      title="Sort by ${label}">
+      <span style="color:${isActive?'var(--blue)':'var(--text3)'};font-weight:${isActive?'600':'500'}">${label}${arrow}</span>
+    </th>`;
+  }
+
+  function buildTable(list, exchange){
+    if(!list.length) return '<p class="empty">No positions. Click + Add to add stocks.</p>';
+    const sorted = sortList(list, exchange);
+    let totalVal=0;
+    const rows=sorted.map(st=>{
+      const valSGD=getStockValueSGD(st);
+      if(valSGD) totalVal+=valSGD;
+      const priceCell=st.lastPrice
+        ?`<span class="price-cell">${fmtPrice(st.lastPrice,st.currency)}</span>${st.lastChange!=null?`<span class="${st.lastChange>=0?'change-pos':'change-neg'}" style="font-size:11px;margin-left:4px">${st.lastChange>=0?'+':''}${st.lastChange.toFixed(1)}%</span>`:''} ${st.priceSource?`<span style="font-size:9px;color:var(--text3);margin-left:3px">${st.priceSource}</span>`:''}`
+        :`<span class="price-stale">–</span>`;
+      const valCell=valSGD?`<span class="value-cell">${fmtK(valSGD)}</span>`:`<span class="price-stale">–</span>`;
+      return `<tr>
+        <td class="ticker-cell">${st.ticker}</td>
+        <td class="company-cell hide-mobile">${st.companyName}</td>
+        <td class="num">${st.units.toLocaleString()}</td>
+        <td class="num">${priceCell}</td>
+        <td class="num">${valCell}</td>
+        <td class="num"><button class="btn btn-sm" onclick="openEditStock('${st.id}')" style="padding:3px 8px;font-size:11px">Edit</button></td>
+      </tr>`;
+    }).join('');
+    return `
+      <div class="portfolio-summary">
+        <span class="port-stat">Positions: <strong>${list.length}</strong></span>
+        <span class="port-stat">Total value: <strong>${fmtK(totalVal)}</strong></span>
+        ${lastUpdated?`<span class="port-stat">Updated: <strong>${tsAgo(lastUpdated)}</strong></span>`:''}
+      </div>
+      <div style="overflow-x:auto">
+      <table class="stock-table">
+        <thead><tr>
+          ${thBtn(exchange,'ticker','Ticker')}
+          ${thBtn(exchange,'name','Company')}
+          ${thBtn(exchange,'units','Units','right')}
+          ${thBtn(exchange,'price','Price','right')}
+          ${thBtn(exchange,'value','Value (SGD)','right')}
+          <th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+  }
+
+  document.getElementById('view-portfolio').innerHTML=`
+    <div class="section-hdr">
+      <span class="section-dot" style="background:var(--blue)"></span>
+      <span class="section-label">🇺🇸 US Portfolio</span>
+    </div>
+    <div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--shadow)">
+      <span style="font-size:12px;color:var(--text2)">USD → SGD:</span>
+      <input type="number" id="fxRateInput" value="${usdSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
+        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onFxRateChange(this.value)">
+      <span style="font-size:12px;color:var(--text2);margin-left:4px">EUR → SGD:</span>
+      <input type="number" id="eurRateInput" value="${eurSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
+        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onEurRateChange(this.value)">
+      <span style="font-size:12px;color:var(--text2);margin-left:4px">THB → SGD:</span>
+      <input type="number" id="thbRateInput" value="${thbSgdRate.toFixed(5)}" min="0.01" max="1" step="0.00001"
+        style="width:90px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onThbRateChange(this.value)">
+      <button class="btn btn-sm btn-refresh" style="margin-left:auto" onclick="fetchLiveFxRate()">↻ Live rates</button>
+    </div>
+    <div class="card">${buildTable(usStocks,'US')}</div>
+    <div class="section-hdr"><span class="section-dot" style="background:var(--green)"></span><span class="section-label">🇸🇬 SGX Portfolio (SGD)</span></div>
+    <div class="card">${buildTable(sgStocks,'SG')}</div>
+    <button class="btn btn-block" onclick="openAddModal()">+ Add stock position</button>`;
+}
+
+function renderAssets(){
+  let html='';
+  const CUR_SYM={'SGD':'S$','THB':'฿','USD':'US$'};
+  CATEGORIES.forEach(cat=>{
+    const catA=assets.filter(a=>a.category===cat);
+    if(!catA.length) return;
+    const tot=catA.filter(a=>!a.isLiability).reduce((s,a)=>s+getAssetValueSGD(a),0);
+    const liab=catA.filter(a=>a.isLiability).reduce((s,a)=>s+getAssetValueSGD(a),0);
+    const summary=liab>0?`Assets ${fmtK(tot)} · Liab ${fmtK(liab)}`:fmtK(tot);
+    html+=`<div class="section-hdr"><span class="section-dot" style="background:${CAT_COLOR[cat]||'#888'}"></span><span class="section-label">${cat}</span><span class="section-total">${summary}</span></div>`;
+    catA.forEach(a=>{
+      const sgdVal=getAssetValueSGD(a);
+      const cur=a.origCurrency||'SGD';
+      const sym=CUR_SYM[cur]||cur+' ';
+      const origStr=cur!=='SGD'&&a.origValue!=null
+        ?`<span style="font-size:11px;color:var(--text3);margin-left:6px">${sym}${Math.round(a.origValue).toLocaleString()}</span>`:'';
+      html+=`<div class="asset-row">
+        <div style="flex:1">
+          <div class="asset-name">${a.name}${cur!=='SGD'?`<span style="font-size:10px;background:var(--bg2);border:0.5px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:6px;color:var(--text3)">${cur}</span>`:''}</div>
+          ${a.isLiability?'<span class="liab-badge">Liability</span>':''}
+        </div>
+        <div style="text-align:right">
+          <div class="asset-value" style="color:${a.isLiability?'var(--red)':'var(--text)'}">${a.isLiability?'−':''}${fmtK(sgdVal)}</div>
+          ${origStr}
+        </div>
+        <button class="btn btn-sm" onclick="openEditAsset('${a.id}')">✏️</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAsset('${a.id}')">🗑</button>
+      </div>`;
+    });
+  });
+  html+=`<button class="btn btn-block" onclick="openAddModal();setModalType('asset')">+ Add asset / liability</button>`;
+  document.getElementById('view-assets').innerHTML=html;
+}
+
+function renderHistory(){
+  let rows='';
+  const rev=[...snapshots].reverse();
+  rev.forEach((s,revI)=>{
+    const realIdx=snapshots.length-1-revI;
+    const prev=realIdx>0?snapshots[realIdx-1]:null;
+    const delta=prev?s.nav-prev.nav:null;
+    const dHtml=delta!=null?`<span style="font-size:12px;font-weight:500;color:${delta>=0?'var(--green)':'var(--red)'}">${delta>=0?'▲':'▼'} ${fmtK(Math.abs(delta))} vs prior</span>`:'';
+    const hasAlloc=!!s.alloc;
+    rows+=`<div style="border-bottom:0.5px solid var(--border);padding:10px 0">
+      <div style="display:flex;align-items:flex-start;gap:10px">
+        <div style="flex:1">
+          <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+            <span style="font-size:13px;font-weight:500">${s.date}</span>
+            ${s.note?`<span style="font-size:12px;color:var(--text2)">${s.note}</span>`:''}
+          </div>
+          <div class="snap-stats">
+            <span class="snap-stat">Stocks: <strong>${fmtK(s.stockValue||0)}</strong></span>
+            <span class="snap-stat">Assets: <strong>${fmtK(s.totalAssets)}</strong></span>
+            <span class="snap-stat">Net worth: <strong>${fmtK(s.nav)}</strong></span>
+            ${dHtml}
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          ${hasAlloc?`<button class="btn btn-sm btn-refresh" onclick="toggleHistoryDetail(${realIdx},this)">▼ Detail</button>`:''}
+          <button class="btn btn-sm btn-danger" onclick="deleteSnapshot(${realIdx})">🗑</button>
+        </div>
+      </div>
+      <div id="hist-detail-${realIdx}" style="display:none;margin-top:8px">${buildSnapDetailHtml(s,realIdx)}</div>
+    </div>`;
+  });
+
+  document.getElementById('view-history').innerHTML=`
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div class="card-title" style="margin:0">Snapshots</div>
+        ${snapshots.length>0?`<button class="btn btn-sm btn-danger" onclick="deleteAllSnapshots()">🗑 Delete all</button>`:''}
+      </div>
+      ${rows||'<p class="empty">No snapshots yet. Go to Dashboard and tap "Record snapshot".</p>'}
+    </div>
+    ${snapshots.length>=2?`<div class="card"><div class="card-title">Full trend</div>${buildTrendChart(snapshots,'histChart')}</div>`:''}
+    <div class="card">
+      <div class="card-title">Sync between devices</div>
+      <div style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:10px">
+        <strong style="color:var(--text)">How it works:</strong> your data lives in this browser's local storage. To use it on another device (iPhone, iPad, another laptop), you need to export a <code style="background:var(--bg2);padding:1px 5px;border-radius:3px">finance-data.json</code> file and load it there.<br><br>
+        <strong style="color:var(--text)">Recommended workflow:</strong><br>
+        1. Make changes on laptop → click <strong>⬇ Export data</strong><br>
+        2. The file <code style="background:var(--bg2);padding:1px 5px;border-radius:3px">finance-data.json</code> downloads to your Downloads folder<br>
+        3. Move it to iCloud Drive (same folder as the HTML file)<br>
+        4. On iPhone/iPad → open the HTML file → click <strong>⬆ Load from file</strong> → pick the JSON
+      </div>
+      <div class="tools-row">
+        <button class="btn btn-primary btn-sm" onclick="exportData()">⬇ Export finance-data.json</button>
+        <button class="btn btn-sm" onclick="importData()">⬆ Load from file</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Stock list management</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.6">If stocks are missing after an update, sync from defaults. This only <em>adds</em> missing tickers — it never removes or overwrites.</p>
+      <div class="tools-row">
+        <button class="btn btn-refresh" onclick="syncMissingAndRefresh()">⟳ Sync missing stocks</button>
+        <button class="btn btn-danger" onclick="resetStocksOnly()">↺ Reset stock list</button>
+      </div>
+    </div>
+    <button class="btn btn-block btn-primary" onclick="switchTab('dashboard');showSnapForm=true;render()">📷 Record today's snapshot</button>`;
+}
+
+function toggleHistoryDetail(idx, btn){
+  const panel=document.getElementById('hist-detail-'+idx);
+  if(!panel) return;
+  const open=panel.style.display!=='none';
+  panel.style.display=open?'none':'block';
+  btn.textContent=open?'▼ Detail':'▲ Hide';
+}
+
+function deleteAllSnapshots(){
+  if(!confirm(`Delete all ${snapshots.length} snapshots? This cannot be undone.`)) return;
+  snapshots=[];
+  saveAll(); render();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// EXPORT / IMPORT
+// ════════════════════════════════════════════════════════════════════
+function exportData(){
+  const data=JSON.stringify({stocks,assets,snapshots,exportedAt:new Date().toISOString()},null,2);
+  const blob=new Blob([data],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='finance-backup-'+todayStr()+'.json'; a.click();
+  URL.revokeObjectURL(url);
+}
+function importData(){
+  const inp=document.createElement('input');
+  inp.type='file'; inp.accept='.json';
+  inp.onchange=e=>{
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const d=JSON.parse(ev.target.result);
+        if(d.stocks) stocks=d.stocks;
+        if(d.assets) assets=d.assets;
+        if(d.snapshots) snapshots=d.snapshots;
+        saveAll(); render();
+        alert('Data imported successfully.');
+      }catch{ alert('Invalid file.'); }
+    };
+    reader.readAsText(file);
+  };
+  inp.click();
+}
+
+function syncMissingAndRefresh(){
+  const before=stocks.length;
+  mergeMissingSeedStocks();
+  const added=stocks.length-before;
+  render();
+  if(added>0){
+    alert(`Added ${added} missing stock${added>1?'s':''}. Click "↻ Refresh prices" to fetch their prices.`);
+  } else {
+    alert('All default stocks are already present. No changes made.');
+  }
+}
+
+function resetStocksOnly(){
+  if(!confirm('This will reset your stock list to the default positions.\n\nYour units, snapshots, and other assets will NOT be affected.\n\nContinue?')) return;
+  stocks=SEED_STOCKS.map(s=>({...s,id:uid()}));
+  saveAll(); render();
+  alert('Stock list reset. Click "↻ Refresh prices" to load prices.');
+}
+function render(){
+  if(currentTab==='dashboard') renderDashboard();
+  else if(currentTab==='portfolio') renderPortfolio();
+  else if(currentTab==='assets') renderAssets();
+  else if(currentTab==='history') renderHistory();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════════
+loadAll();
+render();
+updateBackupBanner();
+// Auto-fetch on first load if prices are missing (forceAll=false — only fetch missing)
+if(stocks.some(s=>!s.lastPrice)){
+  setTimeout(()=>refreshAllPrices(false), 800);
+}
+
+// Register service worker for offline support and PWA install
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
