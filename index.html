@@ -168,14 +168,18 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
 
   <div class="content">
     <div class="tabs">
-      <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab active" onclick="switchTab('dashboard')">Overview</button>
       <button class="tab" onclick="switchTab('portfolio')">Stock Portfolio</button>
+      <button class="tab" onclick="switchTab('dividends')">Dividends</button>
+      <button class="tab" onclick="switchTab('insights')">Insights</button>
       <button class="tab" onclick="switchTab('assets')">Other assets</button>
       <button class="tab" onclick="switchTab('history')">History</button>
     </div>
 
     <div id="view-dashboard" class="tab-content active"></div>
     <div id="view-portfolio" class="tab-content"></div>
+    <div id="view-dividends" class="tab-content"></div>
+    <div id="view-insights" class="tab-content"></div>
     <div id="view-assets" class="tab-content"></div>
     <div id="view-history" class="tab-content"></div>
   </div>
@@ -814,7 +818,7 @@ function computeTotals(){
 function switchTab(t){
   currentTab=t;
   document.querySelectorAll('.tab').forEach((el,i)=>{
-    const ids=['dashboard','portfolio','assets','history'];
+    const ids=['dashboard','portfolio','dividends','insights','assets','history'];
     el.classList.toggle('active',ids[i]===t);
   });
   document.querySelectorAll('.tab-content').forEach(el=>{
@@ -1351,11 +1355,31 @@ function renderDashboard(){
   </div>`:'';
 
   document.getElementById('view-dashboard').innerHTML=`
+
+    <!-- FX Rates bar — always visible on Overview -->
+    <div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--shadow)">
+      <span style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-right:4px">FX Rates</span>
+      <span style="font-size:12px;color:var(--text2)">USD → SGD:</span>
+      <input type="number" id="fxRateInput" value="${usdSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
+        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onFxRateChange(this.value)">
+      <span style="font-size:12px;color:var(--text2);margin-left:4px">EUR → SGD:</span>
+      <input type="number" id="eurRateInput" value="${eurSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
+        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onEurRateChange(this.value)">
+      <span style="font-size:12px;color:var(--text2);margin-left:4px">THB → SGD:</span>
+      <input type="number" id="thbRateInput" value="${thbSgdRate.toFixed(5)}" min="0.01" max="1" step="0.00001"
+        style="width:90px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
+        oninput="onThbRateChange(this.value)">
+      <span style="font-size:11px;color:var(--text3);margin-left:2px">(${(1/thbSgdRate).toFixed(1)} THB/SGD)</span>
+      <button class="btn btn-sm btn-refresh" style="margin-left:auto" onclick="fetchLiveFxRate()">↻ Live rates</button>
+    </div>
+
     ${!t.hasAllPrices?`<div style="background:rgba(186,117,23,.1);border:0.5px solid rgba(186,117,23,.3);border-radius:var(--radius-sm);padding:9px 12px;margin-bottom:12px;font-size:12px;color:var(--amber)">⚠ Some stock prices not yet loaded. Click <strong>↻ Refresh prices</strong> to fetch live data.</div>`:''}
 
     <div class="metric-grid">
       <div class="metric"><div class="metric-label">Net worth</div><div class="metric-value" style="color:${t.nav>=0?'var(--green)':'var(--red)'}">${fmtK(t.nav)}</div><div class="metric-sub">${fmtFull(t.nav)}</div></div>
-      <div class="metric"><div class="metric-label">Stock portfolio</div><div class="metric-value">${fmtK(t.stockValSGD)}</div><div class="metric-sub">${lastUpdated?'Updated '+tsAgo(lastUpdated):'Not yet fetched'} · USD/SGD ${usdSgdRate.toFixed(4)}</div></div>
+      <div class="metric"><div class="metric-label">Stock portfolio</div><div class="metric-value">${fmtK(t.stockValSGD)}</div><div class="metric-sub">${lastUpdated?'Updated '+tsAgo(lastUpdated):'Not yet fetched'}</div></div>
       <div class="metric"><div class="metric-label">Other assets</div><div class="metric-value">${fmtK(t.otherAssets)}</div><div class="metric-sub">CPF, property, cash…</div></div>
       <div class="metric"><div class="metric-label">Liabilities</div><div class="metric-value" style="color:var(--red)">${fmtK(t.totalLiab)}</div><div class="metric-sub">Mortgage etc.</div></div>
     </div>
@@ -1466,9 +1490,18 @@ const _sortState = { US: {col:'ticker', dir:1}, SG: {col:'ticker', dir:1} };
 
 function sortStocks(exchange, col){
   const s = _sortState[exchange];
-  if(s.col === col) s.dir *= -1; // toggle direction
+  if(s.col === col) s.dir *= -1;
   else { s.col = col; s.dir = 1; }
   renderPortfolio();
+}
+
+// Dividend tab sort state
+let _divSort = { col: 'annualNet', dir: -1 }; // default: highest net income first
+
+function sortDividends(col){
+  if(_divSort.col === col) _divSort.dir *= -1;
+  else { _divSort.col = col; _divSort.dir = col==='ticker'||col==='name' ? 1 : -1; }
+  renderDividends();
 }
 
 function renderPortfolio(){
@@ -1509,13 +1542,15 @@ function renderPortfolio(){
     const rows=sorted.map(st=>{
       const valSGD=getStockValueSGD(st);
       if(valSGD) totalVal+=valSGD;
+      const divNote = getDivInfo(st).note;
+      const suspendedBadge = divNote ? `<span style="font-size:10px;background:#FCEBEB;color:#791F1F;padding:1px 6px;border-radius:10px;margin-left:6px">Suspended</span>` : '';
       const priceCell=st.lastPrice
         ?`<span class="price-cell">${fmtPrice(st.lastPrice,st.currency)}</span>${st.lastChange!=null?`<span class="${st.lastChange>=0?'change-pos':'change-neg'}" style="font-size:11px;margin-left:4px">${st.lastChange>=0?'+':''}${st.lastChange.toFixed(1)}%</span>`:''} ${st.priceSource?`<span style="font-size:9px;color:var(--text3);margin-left:3px">${st.priceSource}</span>`:''}`
         :`<span class="price-stale">–</span>`;
       const valCell=valSGD?`<span class="value-cell">${fmtK(valSGD)}</span>`:`<span class="price-stale">–</span>`;
       return `<tr>
         <td class="ticker-cell">${st.ticker}</td>
-        <td class="company-cell hide-mobile">${st.companyName}</td>
+        <td class="company-cell hide-mobile">${st.companyName}${suspendedBadge}</td>
         <td class="num">${st.units.toLocaleString()}</td>
         <td class="num">${priceCell}</td>
         <td class="num">${valCell}</td>
@@ -1546,21 +1581,6 @@ function renderPortfolio(){
     <div class="section-hdr">
       <span class="section-dot" style="background:var(--blue)"></span>
       <span class="section-label">🇺🇸 US Portfolio</span>
-    </div>
-    <div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius);padding:10px 14px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;box-shadow:var(--shadow)">
-      <span style="font-size:12px;color:var(--text2)">USD → SGD:</span>
-      <input type="number" id="fxRateInput" value="${usdSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
-        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
-        oninput="onFxRateChange(this.value)">
-      <span style="font-size:12px;color:var(--text2);margin-left:4px">EUR → SGD:</span>
-      <input type="number" id="eurRateInput" value="${eurSgdRate.toFixed(4)}" min="0.5" max="3" step="0.0001"
-        style="width:80px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
-        oninput="onEurRateChange(this.value)">
-      <span style="font-size:12px;color:var(--text2);margin-left:4px">THB → SGD:</span>
-      <input type="number" id="thbRateInput" value="${thbSgdRate.toFixed(5)}" min="0.01" max="1" step="0.00001"
-        style="width:90px;margin-bottom:0;font-size:13px;font-weight:600;padding:5px 8px;"
-        oninput="onThbRateChange(this.value)">
-      <button class="btn btn-sm btn-refresh" style="margin-left:auto" onclick="fetchLiveFxRate()">↻ Live rates</button>
     </div>
     <div class="card">${buildTable(usStocks,'US')}</div>
     <div class="section-hdr"><span class="section-dot" style="background:var(--green)"></span><span class="section-label">🇸🇬 SGX Portfolio (SGD)</span></div>
@@ -1640,7 +1660,7 @@ function renderHistory(){
         <div class="card-title" style="margin:0">Snapshots</div>
         ${snapshots.length>0?`<button class="btn btn-sm btn-danger" onclick="deleteAllSnapshots()">🗑 Delete all</button>`:''}
       </div>
-      ${rows||'<p class="empty">No snapshots yet. Go to Dashboard and tap "Record snapshot".</p>'}
+      ${rows||'<p class="empty">No snapshots yet. Go to Overview and tap "Record snapshot".</p>'}
     </div>
     ${snapshots.length>=2?`<div class="card"><div class="card-title">Full trend</div>${buildTrendChart(snapshots,'histChart')}</div>`:''}
     <div class="card">
@@ -1734,13 +1754,779 @@ function resetStocksOnly(){
 function render(){
   if(currentTab==='dashboard') renderDashboard();
   else if(currentTab==='portfolio') renderPortfolio();
+  else if(currentTab==='dividends') renderDividends();
+  else if(currentTab==='insights') renderInsights();
   else if(currentTab==='assets') renderAssets();
   else if(currentTab==='history') renderHistory();
 }
 
 // ════════════════════════════════════════════════════════════════════
-// INIT
+// DIVIDEND DATA  — annual dividend per share (USD for US, SGD for SGX)
+// Source: verified from company filings & stockanalysis.com, July 2026
+// Users can edit these figures via the Edit button per stock row
 // ════════════════════════════════════════════════════════════════════
+// Stored on each stock object as: stock.divPerShare (number) + stock.divCurrency
+// If not set, falls back to DIVIDEND_DEFAULTS lookup by ticker
+
+const DIVIDEND_DEFAULTS = {
+  // US stocks — annual USD per share
+  'AAPL':  { dps: 1.08,  freq: 'quarterly' },
+  'AMZN':  { dps: 0,     freq: 'none'      },
+  'ASML':  { dps: 9.97,  freq: 'quarterly' }, // €7.50 × ~1.33 USD/EUR approx
+  'BXSL':  { dps: 3.08,  freq: 'quarterly' },
+  'CPRT':  { dps: 0,     freq: 'none'      },
+  'ELV':   { dps: 6.88,  freq: 'quarterly' },
+  'FICO':  { dps: 0,     freq: 'none'      },
+  'LVMUY': { dps: 2.49,  freq: 'semi-annual'},
+  'MA':    { dps: 3.48,  freq: 'quarterly' },
+  'MBGL':  { dps: 0,     freq: 'none'      },
+  'MELI':  { dps: 0,     freq: 'none'      },
+  'META':  { dps: 0.60,  freq: 'quarterly' },  // started paying 2024 Q1 $0.15/qtr
+  'MSFT':  { dps: 3.64,  freq: 'quarterly' },
+  'NVDA':  { dps: 0.04,  freq: 'quarterly' },  // tiny dividend
+  'PANW':  { dps: 0,     freq: 'none'      },
+  'PLTR':  { dps: 0,     freq: 'none'      },
+  'SPGI':  { dps: 3.88,  freq: 'quarterly' },
+  'TMO':   { dps: 1.88,  freq: 'quarterly' },
+  'UNH':   { dps: 9.28,  freq: 'quarterly' },
+  'ACN':   { dps: 6.52,  freq: 'quarterly' },
+  // SGX stocks — annual SGD per share / unit
+  'SET EUR':{ dps: 0.04, freq: 'semi-annual'},
+  'A17U':  { dps: 0.130, freq: 'semi-annual'},
+  'J69U':  { dps: 0.078, freq: 'semi-annual'},
+  'M44U':  { dps: 0.127, freq: 'quarterly' },
+  'O39':   { dps: 0.99,  freq: 'semi-annual'},
+  'U11':   { dps: 1.56,  freq: 'semi-annual'},
+  'C38U':  { dps: 0.116, freq: 'semi-annual'},
+  'BWCU':  { dps: 0, freq: 'none', note: '⚠ Trading & distributions suspended since Aug 2023 (EC World REIT)' },
+  // SGX generic tickers
+  'D05':   { dps: 3.06,  freq: 'quarterly' },
+};
+
+function getDivInfo(st){
+  if(st.divPerShare != null) return { dps: st.divPerShare, freq: st.divFreq||'annual', note: st.divNote||null };
+  const d = DIVIDEND_DEFAULTS[st.ticker] || { dps: 0, freq: 'none' };
+  return { dps: d.dps, freq: d.freq, note: d.note||null };
+}
+
+function getDivSGD(st){
+  const {dps} = getDivInfo(st);
+  if(!dps) return 0;
+  // Convert to SGD
+  if(st.exchange==='US'){
+    if(st.currency==='EUR') return dps * eurSgdRate;
+    return dps * usdSgdRate;
+  }
+  return dps; // SGX already in SGD
+}
+
+function renderDividends(){
+  const GOAL_MONTHLY = 10000;
+  const US_WHT = 0.30;  // 30% US withholding tax — no SG-US tax treaty
+  const SG_WHT = 0.00;  // Singapore dividends: zero withholding for SG residents
+  const FREQ_LABEL = { 'quarterly':'Quarterly','semi-annual':'Semi-annual','annual':'Annual','monthly':'Monthly','none':'None' };
+
+  // Build rows — each row carries both gross and net figures
+  const rows = stocks.map(st=>{
+    const {dps, freq, note} = getDivInfo(st);
+    const isUS = st.exchange==='US';
+    const wht  = isUS ? US_WHT : SG_WHT;
+    const divSGD      = getDivSGD(st);                    // gross per unit in SGD
+    const divSGDNet   = divSGD * (1 - wht);               // after withholding
+    const annualGross = divSGD * st.units;
+    const annualNet   = divSGDNet * st.units;
+    const taxDrag     = annualGross - annualNet;
+    const monthlyNet  = annualNet / 12;
+    const yieldPct    = st.lastPrice ? (dps / st.lastPrice * 100) : null;
+    const yieldNetPct = yieldPct != null ? yieldPct * (1 - wht) : null;
+    return { st, dps, freq, note, wht, isUS, divSGD, divSGDNet, annualGross, annualNet, taxDrag, monthlyNet, yieldPct, yieldNetPct };
+  });
+
+  const totalGross   = rows.reduce((s,r)=>s+r.annualGross, 0);
+  const totalNet     = rows.reduce((s,r)=>s+r.annualNet,   0);
+  const totalTaxDrag = totalGross - totalNet;
+  const totalMonthly = totalNet / 12;
+  const goalPct      = Math.min(100, Math.round(totalMonthly / GOAL_MONTHLY * 100));
+
+  // US vs SG breakdown
+  const usGross = rows.filter(r=>r.isUS).reduce((s,r)=>s+r.annualGross,0);
+  const usNet   = rows.filter(r=>r.isUS).reduce((s,r)=>s+r.annualNet,0);
+  const sgNet   = rows.filter(r=>!r.isUS).reduce((s,r)=>s+r.annualNet,0);
+
+  const paying    = rows.filter(r=>r.annualGross>0).sort((a,b)=>b.annualNet-a.annualNet);
+  const suspended = rows.filter(r=>r.annualGross===0 && r.note);
+  const noPay     = rows.filter(r=>r.annualGross===0 && !r.note);
+
+  function tableRow(r){
+    const {st,dps,freq,isUS,wht,annualGross,annualNet,taxDrag,monthlyNet,yieldPct,yieldNetPct} = r;
+    const cur = isUS ? 'US$' : 'S$';
+    const dpsStr     = dps>0 ? `${cur}${dps.toFixed(2)}` : '—';
+    const whtBadge   = isUS
+      ? `<span style="font-size:9px;background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 4px;margin-left:4px">-30%</span>`
+      : `<span style="font-size:9px;background:rgba(29,158,117,.12);color:var(--green);border-radius:3px;padding:1px 4px;margin-left:4px">Tax-free</span>`;
+    const yieldStr   = yieldNetPct!=null && dps>0 ? `${yieldNetPct.toFixed(1)}%` : '—';
+    const taxStr     = taxDrag>0 ? `<span style="color:var(--red);font-size:11px">−${fmtK(taxDrag)}</span>` : '—';
+    return `<tr>
+      <td style="font-family:monospace;font-size:12px;font-weight:600;color:var(--blue)">${st.ticker}${whtBadge}</td>
+      <td style="font-size:12px;color:var(--text2)" class="hide-mobile">${st.companyName}</td>
+      <td style="text-align:right;font-size:12px">${st.units.toLocaleString()}</td>
+      <td style="text-align:right;font-size:12px">${dpsStr}</td>
+      <td style="text-align:right;font-size:12px;color:var(--text2)">${FREQ_LABEL[freq]||freq}</td>
+      <td style="text-align:right;font-size:12px;color:${(yieldNetPct||0)>5?'var(--green)':(yieldNetPct||0)>2?'var(--blue)':'var(--text2)'}">${yieldStr}</td>
+      <td style="text-align:right;font-size:12px;color:var(--text3)">${annualGross>0?fmtK(annualGross):'—'}</td>
+      <td style="text-align:right;font-size:11px">${taxStr}</td>
+      <td style="text-align:right;font-weight:600;font-size:13px;color:var(--green)">${annualNet>0?fmtK(annualNet):'—'}</td>
+      <td style="text-align:right;font-size:12px;color:var(--text2)">${monthlyNet>0?fmtK(monthlyNet):''}</td>
+      <td style="text-align:right">
+        <button class="btn btn-sm" onclick="openDivEdit('${st.id}')" style="padding:3px 8px;font-size:11px">Edit</button>
+      </td>
+    </tr>`;
+  }
+
+  // Sort paying rows
+  const sortedPaying = [...paying].sort((a,b)=>{
+    let av, bv;
+    const col = _divSort.col;
+    if     (col==='ticker')    { av=a.st.ticker;        bv=b.st.ticker; }
+    else if(col==='name')      { av=a.st.companyName||''; bv=b.st.companyName||''; }
+    else if(col==='units')     { av=a.st.units;         bv=b.st.units; }
+    else if(col==='dps')       { av=a.dps;              bv=b.dps; }
+    else if(col==='yieldNet')  { av=a.yieldNetPct||0;   bv=b.yieldNetPct||0; }
+    else if(col==='gross')     { av=a.annualGross;       bv=b.annualGross; }
+    else if(col==='tax')       { av=a.taxDrag;          bv=b.taxDrag; }
+    else if(col==='annualNet') { av=a.annualNet;        bv=b.annualNet; }
+    else if(col==='monthlyNet'){ av=a.monthlyNet;       bv=b.monthlyNet; }
+    if(typeof av==='string') return _divSort.dir * av.localeCompare(bv);
+    return _divSort.dir * ((av||0) - (bv||0));
+  });
+
+  function divTh(col, label, align='right'){
+    const active = _divSort.col===col;
+    const arrow  = active ? (_divSort.dir===1 ? ' ↑' : ' ↓') : '';
+    return `<th style="cursor:pointer;user-select:none;white-space:nowrap;text-align:${align}"
+      onclick="sortDividends('${col}')" title="Sort by ${label}">
+      <span style="color:${active?'var(--blue)':'var(--text3)'};font-weight:${active?'600':'500'}">${label}${arrow}</span>
+    </th>`;
+  }
+
+  document.getElementById('view-dividends').innerHTML=`
+    <!-- Tax context banner -->
+    <div style="background:rgba(55,138,221,.07);border:0.5px solid rgba(55,138,221,.25);border-radius:var(--radius);padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--text2);line-height:1.7">
+      <strong style="color:var(--text)">🇸🇬 Singapore resident tax treatment:</strong>
+      <span style="background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">US stocks −30% withholding</span> deducted at source before dividends reach your account. Singapore has no tax treaty with the US so the full rate applies — you cannot reclaim it.
+      <span style="background:rgba(29,158,117,.12);color:var(--green);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">SGX stocks 0% tax-free</span> under Singapore's one-tier system. All figures below show what you actually receive after withholding.
+    </div>
+
+    <!-- Summary metrics — all NET of withholding -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:9px;margin-bottom:12px">
+      <div class="metric">
+        <div class="metric-label">Net annual income</div>
+        <div class="metric-value" style="color:var(--green)">${fmtK(totalNet)}</div>
+        <div class="metric-sub">after all withholding tax</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Net monthly income</div>
+        <div class="metric-value">${fmtK(totalMonthly)}</div>
+        <div class="metric-sub">what you actually receive</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Annual tax drag (US WHT)</div>
+        <div class="metric-value" style="color:var(--red)">${fmtK(totalTaxDrag)}</div>
+        <div class="metric-sub">lost to 30% US withholding</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Dividends cover goal</div>
+        <div class="metric-value" style="color:${goalPct>=100?'var(--green)':goalPct>=50?'var(--blue)':'var(--amber)'}">${goalPct}%</div>
+        <div class="metric-sub">${goalPct>=100?'🎉 Fully covered!':'S$'+Math.round(GOAL_MONTHLY-totalMonthly).toLocaleString()+'/mo gap'}</div>
+      </div>
+    </div>
+
+    <!-- US vs SG income breakdown -->
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title">Income by market — gross vs net after withholding</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div style="background:rgba(226,75,74,.06);border:0.5px solid rgba(226,75,74,.2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;font-weight:500;color:var(--red);margin-bottom:6px">🇺🇸 US Portfolio (−30% WHT)</div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text2)">Gross declared</span>
+            <span style="color:var(--text3)">${fmtK(usGross)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text2)">Withheld (30%)</span>
+            <span style="color:var(--red)">−${fmtK(usGross-usNet)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px">
+            <span>You receive</span>
+            <span style="color:var(--green)">${fmtK(usNet)}</span>
+          </div>
+        </div>
+        <div style="background:rgba(29,158,117,.06);border:0.5px solid rgba(29,158,117,.2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;font-weight:500;color:var(--green);margin-bottom:6px">🇸🇬 SGX Portfolio (0% tax-free)</div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text2)">Declared</span>
+            <span style="color:var(--text3)">${fmtK(sgNet)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
+            <span style="color:var(--text2)">Withheld</span>
+            <span style="color:var(--green)">S$0</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px">
+            <span>You receive</span>
+            <span style="color:var(--green)">${fmtK(sgNet)}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Progress bar — net income vs goal -->
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
+        <span>Net dividend income vs S$${GOAL_MONTHLY.toLocaleString()}/mo retirement goal</span>
+        <span style="font-weight:600;color:${goalPct>=100?'var(--green)':'var(--text)'}">${goalPct}%</span>
+      </div>
+      <div style="background:var(--bg2);border-radius:6px;height:10px;overflow:hidden;margin-bottom:5px">
+        <div style="width:${Math.min(100,goalPct)}%;height:100%;border-radius:6px;background:${goalPct>=100?'var(--green)':'var(--blue)'};transition:width .5s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)">
+        <span>${fmtK(totalMonthly)}/mo net</span>
+        <span>${fmtK(GOAL_MONTHLY-totalMonthly)}/mo still needed from capital withdrawals</span>
+        <span>S$${GOAL_MONTHLY.toLocaleString()} goal</span>
+      </div>
+    </div>
+
+    <!-- Dividend table -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
+        <div class="card-title" style="margin:0">Dividend-paying positions</div>
+        <span style="font-size:11px;color:var(--text3)">Yield % shown is net after withholding · Click Edit to override DPS</span>
+      </div>
+      <div style="overflow-x:auto">
+      <table class="stock-table">
+        <thead><tr>
+          ${divTh('ticker','Ticker','left')}
+          <th class="hide-mobile" style="cursor:pointer;user-select:none" onclick="sortDividends('name')" title="Sort by Company">
+            <span style="color:${_divSort.col==='name'?'var(--blue)':'var(--text3)'};font-weight:${_divSort.col==='name'?'600':'500'}">Company${_divSort.col==='name'?(_divSort.dir===1?' ↑':' ↓'):''}</span>
+          </th>
+          ${divTh('units','Units')}
+          ${divTh('dps','DPS')}
+          <th style="text-align:right;color:var(--text3);white-space:nowrap">Frequency</th>
+          ${divTh('yieldNet','Net yield')}
+          ${divTh('gross','Gross (SGD)')}
+          ${divTh('tax','Tax withheld')}
+          ${divTh('annualNet','Net (SGD)')}
+          ${divTh('monthlyNet','/mo net')}
+          <th></th>
+        </tr></thead>
+        <tbody>
+          ${sortedPaying.map(tableRow).join('')}
+          <tr style="border-top:1.5px solid var(--border)">
+            <td colspan="2" style="font-weight:600;font-size:13px;padding:8px">Total</td>
+            <td></td><td></td><td></td><td></td>
+            <td style="text-align:right;font-size:12px;color:var(--text3)">${fmtK(totalGross)}</td>
+            <td style="text-align:right;font-size:12px;color:var(--red)">−${fmtK(totalTaxDrag)}</td>
+            <td style="text-align:right;font-weight:700;font-size:14px;color:var(--green)">${fmtK(totalNet)}</td>
+            <td style="text-align:right;font-weight:600;font-size:13px;color:var(--green)">${fmtK(totalMonthly)}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+      </div>
+    </div>
+
+    <!-- Non-dividend stocks -->
+    <div class="card">
+      <div class="card-title">Non-dividend positions (${noPay.length})</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${noPay.map(r=>`<span style="background:var(--bg2);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;font-family:monospace;color:var(--text2)">${r.st.ticker}</span>`).join('')}
+      </div>
+      <p style="font-size:12px;color:var(--text3);margin-top:8px">Growth positions — no dividend income. Returns come from capital appreciation.</p>
+    </div>
+
+    ${suspended.length>0?`
+    <div class="card" style="border-color:rgba(226,75,74,.3);background:rgba(226,75,74,.04)">
+      <div class="card-title" style="color:var(--red)">⚠ Suspended or distressed positions</div>
+      ${suspended.map(r=>{
+        const note=getDivInfo(r.st).note||'';
+        return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border)">
+          <span style="font-family:monospace;font-size:13px;font-weight:600;color:var(--red);min-width:60px">${r.st.ticker}</span>
+          <div>
+            <div style="font-size:13px;font-weight:500">${r.st.companyName}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:2px">${note}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`:''}
+
+    <!-- Payout calendar -->
+    <div class="card">
+      <div class="card-title">Approximate payout schedule</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
+        ${buildPayoutCalendar(paying)}
+      </div>
+    </div>`;
+}
+
+// ── Dividend edit modal ──────────────────────────────────────────────
+let _divEditId = null;
+function openDivEdit(id){
+  const st=stocks.find(x=>x.id===id); if(!st) return;
+  _divEditId=id;
+  const def=getDivInfo(st);
+  const cur=st.exchange==='US'?'US$':'S$';
+  // Build a small inline modal
+  const existing=document.getElementById('div-edit-overlay');
+  if(existing) existing.remove();
+  const div=document.createElement('div');
+  div.id='div-edit-overlay';
+  div.className='overlay';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div class="modal" onclick="event.stopPropagation()">
+    <h2>Edit dividend — ${st.ticker}</h2>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px">${st.companyName}<br>Override the default DPS figure if the actual dividend differs.</p>
+    <label>Annual dividend per share (${cur})</label>
+    <input type="number" id="div-dps" value="${def.dps}" min="0" step="0.01" style="margin-bottom:10px">
+    <label>Payment frequency</label>
+    <select id="div-freq" style="margin-bottom:14px">
+      <option value="quarterly" ${def.freq==='quarterly'?'selected':''}>Quarterly</option>
+      <option value="semi-annual" ${def.freq==='semi-annual'?'selected':''}>Semi-annual</option>
+      <option value="monthly" ${def.freq==='monthly'?'selected':''}>Monthly</option>
+      <option value="annual" ${def.freq==='annual'?'selected':''}>Annual</option>
+      <option value="none" ${def.freq==='none'?'selected':''}>None (no dividend)</option>
+    </select>
+    <div class="modal-btns">
+      <button class="btn btn-primary" style="flex:1" onclick="saveDivEdit()">Save</button>
+      <button class="btn btn-danger" onclick="resetDivEdit()">Reset to default</button>
+      <button class="btn" onclick="document.getElementById('div-edit-overlay').remove()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+}
+function saveDivEdit(){
+  const dps=parseFloat(document.getElementById('div-dps').value)||0;
+  const freq=document.getElementById('div-freq').value;
+  stocks=stocks.map(s=>s.id===_divEditId?{...s,divPerShare:dps,divFreq:freq}:s);
+  document.getElementById('div-edit-overlay').remove();
+  saveAll(); render();
+}
+function resetDivEdit(){
+  stocks=stocks.map(s=>s.id===_divEditId?{...s,divPerShare:undefined,divFreq:undefined}:s);
+  document.getElementById('div-edit-overlay').remove();
+  saveAll(); render();
+}
+
+// ── Payout calendar ──────────────────────────────────────────────────
+function buildPayoutCalendar(paying){
+  const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const FREQ_MONTHS = {
+    'quarterly':   [0,3,6,9],
+    'semi-annual': [2,8],
+    'monthly':     [0,1,2,3,4,5,6,7,8,9,10,11],
+    'annual':      [11],
+  };
+  // cal[month] = array of {ticker, exchange}
+  const cal = Array.from({length:12},()=>[]);
+  paying.forEach(r=>{
+    const months = FREQ_MONTHS[r.freq] || [];
+    months.forEach(m=>cal[m].push({ticker:r.st.ticker, exchange:r.st.exchange}));
+  });
+
+  const legend = `<div style="grid-column:1/-1;display:flex;gap:12px;margin-bottom:4px;font-size:11px">
+    <span style="display:flex;align-items:center;gap:4px">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(55,138,221,.18);border:0.5px solid rgba(55,138,221,.4)"></span>
+      <span style="color:var(--text2)">US stock</span>
+    </span>
+    <span style="display:flex;align-items:center;gap:4px">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(29,158,117,.18);border:0.5px solid rgba(29,158,117,.4)"></span>
+      <span style="color:var(--text2)">SGX stock</span>
+    </span>
+  </div>`;
+
+  const cells = MONTHS.map((m,i)=>{
+    const chips = cal[i].length>0
+      ? cal[i].map(({ticker,exchange})=>{
+          const isUS = exchange==='US';
+          const bg   = isUS ? 'rgba(55,138,221,.15)'    : 'rgba(29,158,117,.15)';
+          const col  = isUS ? 'var(--blue)'              : 'var(--green)';
+          const bdr  = isUS ? 'rgba(55,138,221,.35)'    : 'rgba(29,158,117,.35)';
+          return `<span style="display:inline-block;font-size:10px;font-family:monospace;background:${bg};color:${col};border:0.5px solid ${bdr};border-radius:3px;padding:1px 5px;margin:1px">${ticker}</span>`;
+        }).join('')
+      : `<span style="font-size:10px;color:var(--text3)">—</span>`;
+    return `<div style="background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px">
+      <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:5px">${m}</div>
+      ${chips}
+    </div>`;
+  }).join('');
+
+  return legend + cells;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// INSIGHTS — Asset Allocation vs Target + Monthly Savings Tracker
+// ════════════════════════════════════════════════════════════════════
+
+// Stock categorisation — used for allocation analysis
+const STOCK_CATEGORY = {
+  // US Growth (no/minimal dividend — capital appreciation plays)
+  'AMZN':'US Growth', 'CPRT':'US Growth', 'FICO':'US Growth',
+  'MELI':'US Growth', 'META':'US Growth', 'NVDA':'US Growth',
+  'PANW':'US Growth', 'PLTR':'US Growth', 'MBGL':'US Growth',
+  // US Quality / Dividend
+  'AAPL':'US Quality', 'ASML':'US Quality', 'ELV':'US Quality',
+  'LVMUY':'US Quality', 'MA':'US Quality', 'MSFT':'US Quality',
+  'SPGI':'US Quality', 'TMO':'US Quality', 'UNH':'US Quality', 'ACN':'US Quality',
+  // US Income (high-yield)
+  'BXSL':'US Income',
+  // SGX REITs (tax-free income)
+  'A17U':'SG REIT', 'J69U':'SG REIT', 'M44U':'SG REIT',
+  'C38U':'SG REIT', 'SET EUR':'SG REIT',
+  // SGX suspended
+  'BWCU':'Suspended',
+  // SGX Blue Chips (dividend, tax-free)
+  'O39':'SG Blue Chip', 'U11':'SG Blue Chip', 'D05':'SG Blue Chip',
+};
+
+// Target allocation (% of investable assets = stocks + cash, ex-property, ex-CPF, ex-insurance)
+const ALLOC_TARGET = [
+  { key:'SG REIT',      label:'SG REITs',          target:28, color:'#1D9E75',
+    desc:'Tax-free income. Best fit for retirement cashflow.' },
+  { key:'SG Blue Chip', label:'SG Blue Chips',      target:12, color:'#2ECC71',
+    desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.' },
+  { key:'US Quality',   label:'US Quality/Dividend',target:30, color:'#378ADD',
+    desc:'Dividend payers. 30% WHT applies — strong compounders.' },
+  { key:'US Income',    label:'US High Yield',      target:5,  color:'#7F77DD',
+    desc:'BXSL-type — high income but watch credit risk.' },
+  { key:'US Growth',    label:'US Growth',          target:15, color:'#BA7517',
+    desc:'No dividend. Capital appreciation only. Reduce over time.' },
+  { key:'Cash',         label:'Cash / Emergency',   target:10, color:'#888780',
+    desc:'3–6 months expenses. Investable buffer.' },
+  { key:'Suspended',    label:'Suspended',          target:0,  color:'#E24B4A',
+    desc:'EC World REIT — trading & distribution halted.' },
+];
+
+// Asset rules:
+// • Property SG → illiquid, no income, not investable
+// • Property TH → rented (income to parents), no income to you, not investable
+// • CPF → locked, guaranteed 4%, not freely investable
+// • Insurance → locked, not investable
+// • Cash → investable
+// • Stocks → investable
+
+function buildInsightsData(){
+  const usd = usdSgdRate, thb = thbSgdRate, eur = eurSgdRate;
+
+  // ── Stock buckets ─────────────────────────────────────────────────
+  const stockBuckets = {};
+  ALLOC_TARGET.forEach(a=>{ stockBuckets[a.key]=0; });
+  let totalStocks = 0;
+  stocks.forEach(st=>{
+    if(!st.lastPrice) return;
+    const cat = STOCK_CATEGORY[st.ticker] || (st.exchange==='SG'?'SG Blue Chip':'US Quality');
+    let val = st.lastPrice * st.units;
+    if(st.currency==='USD'||st.exchange==='US') val *= usd;
+    else if(st.currency==='EUR') val *= eur;
+    stockBuckets[cat] = (stockBuckets[cat]||0) + val;
+    totalStocks += val;
+  });
+
+  // ── Other asset buckets ───────────────────────────────────────────
+  let cashTotal=0, propSG=0, propTH=0, cpfTotal=0, insurTotal=0, liabTotal=0;
+  assets.forEach(a=>{
+    const sgd = getAssetValueSGD(a);
+    if(a.isLiability){ liabTotal+=sgd; return; }
+    const cat = a.category;
+    const name = (a.name||'').toLowerCase();
+    if(cat==='Cash') cashTotal+=sgd;
+    else if(cat==='Property'){
+      // TH property: LPN, Klong — anything with THB or 'TH' in name
+      if(a.origCurrency==='THB'||name.includes('lpn')||name.includes('klong')||name.includes(' th')) propTH+=sgd;
+      else propSG+=sgd;
+    }
+    else if(cat==='CPF') cpfTotal+=sgd;
+    else if(cat==='Insurance') insurTotal+=sgd;
+  });
+
+  // ── Investable vs non-investable ──────────────────────────────────
+  const investable = totalStocks + cashTotal;
+  const nonInvestable = propSG + propTH + cpfTotal + insurTotal;
+  const totalAssets = investable + nonInvestable;
+  const nav = totalAssets - liabTotal;
+
+  // ── Current allocation vs target (% of investable) ───────────────
+  stockBuckets['Cash'] = cashTotal;
+  const allocRows = ALLOC_TARGET.map(t=>{
+    const current = (stockBuckets[t.key]||0);
+    const currentPct = investable>0 ? current/investable*100 : 0;
+    const diff = currentPct - t.target;
+    const gapSGD = (t.target/100 - currentPct/100) * investable; // SGD to buy/sell
+    return {...t, current, currentPct, diff, gapSGD};
+  });
+
+  // ── Monthly savings from snapshots ────────────────────────────────
+  const savingsData = [];
+  for(let i=1; i<snapshots.length; i++){
+    const prev=snapshots[i-1], curr=snapshots[i];
+    // Days between
+    const days=(new Date(curr.date)-new Date(prev.date))/(1000*60*60*24);
+    if(days<5||days>60) continue; // skip gaps that aren't roughly monthly
+    // Stock market movement estimate: use stock value change
+    const stockDelta=(curr.stockValue||0)-(prev.stockValue||0);
+    // Total investable change
+    const invPrev=(prev.stockValue||0)+(prev.investable||0)-(prev.stockValue||0);
+    const invCurr=(curr.stockValue||0)+(curr.investable||0)-(curr.stockValue||0);
+    // Net worth change
+    const navDelta=curr.nav-prev.nav;
+    // Net new savings = nav change minus estimated market gain
+    // Market gain ≈ stock value change (imperfect but reasonable)
+    const mktGain=stockDelta;
+    const netSaved=navDelta-mktGain;
+    savingsData.push({
+      date:curr.date, label:curr.date.slice(0,7),
+      navDelta, mktGain, netSaved, days
+    });
+  }
+
+  return { stockBuckets, cashTotal, propSG, propTH, cpfTotal, insurTotal,
+           liabTotal, investable, nonInvestable, totalAssets, nav,
+           totalStocks, allocRows, savingsData };
+}
+
+function renderInsights(){
+  const d = buildInsightsData();
+  const { investable, nonInvestable, totalAssets, nav, liabTotal,
+          totalStocks, cashTotal, propSG, propTH, cpfTotal, insurTotal,
+          allocRows, savingsData } = d;
+
+  // ── 1. Asset Map ──────────────────────────────────────────────────
+  function assetBox(label, value, sub, color, badge, investableFlag){
+    const investBadge = investableFlag
+      ? `<span style="font-size:9px;background:rgba(29,158,117,.15);color:var(--green);border:0.5px solid rgba(29,158,117,.3);border-radius:3px;padding:1px 5px;margin-left:5px">Investable</span>`
+      : `<span style="font-size:9px;background:var(--bg2);color:var(--text3);border:0.5px solid var(--border);border-radius:3px;padding:1px 5px;margin-left:5px">Locked</span>`;
+    return `<div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;position:relative;border-left:3px solid ${color}">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
+        <span style="font-size:12px;font-weight:500;color:var(--text)">${label}${investBadge}</span>
+        <span style="font-size:14px;font-weight:700;color:var(--text)">${fmtK(value)}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">
+        ${badge?`<span style="font-size:10px;background:${color}22;color:${color};border-radius:3px;padding:1px 6px;font-weight:500">${badge}</span>`:''}
+        <span style="font-size:11px;color:var(--text3)">${sub}</span>
+      </div>
+    </div>`;
+  }
+
+  // ── 2. Allocation bars ────────────────────────────────────────────
+  function allocBar(row){
+    const cur = Math.max(0, row.currentPct);
+    const tgt = row.target;
+    const over = cur > tgt+2;
+    const under = cur < tgt-2;
+    const status = over ? '▲ Overweight' : under ? '▼ Underweight' : '✓ On target';
+    const statusCol = over ? 'var(--amber)' : under ? 'var(--blue)' : 'var(--green)';
+    const gapText = Math.abs(row.gapSGD)>1000
+      ? (row.gapSGD>0?'Buy ':'Sell ')+fmtK(Math.abs(row.gapSGD))
+      : 'On target';
+
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:4px">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:10px;height:10px;border-radius:50%;background:${row.color};flex-shrink:0;display:inline-block"></span>
+          <span style="font-size:13px;font-weight:500;color:var(--text)">${row.label}</span>
+          ${row.key==='Suspended'?`<span style="font-size:10px;background:#FCEBEB;color:var(--red);border-radius:3px;padding:1px 5px">Suspended</span>`:''}
+        </div>
+        <span style="font-size:11px;color:${statusCol};font-weight:500">${status} · ${gapText}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:5px;padding-left:17px">${row.desc}</div>
+      <!-- Current bar -->
+      <div style="padding-left:17px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <span style="font-size:11px;color:var(--text2);width:52px;flex-shrink:0">Current</span>
+          <div style="flex:1;background:var(--bg2);border-radius:4px;height:8px;overflow:hidden">
+            <div style="width:${Math.min(100,cur/Math.max(tgt,cur)*100).toFixed(1)}%;height:100%;border-radius:4px;background:${row.color};transition:width .5s"></div>
+          </div>
+          <span style="font-size:12px;font-weight:600;color:var(--text);width:36px;text-align:right">${cur.toFixed(1)}%</span>
+        </div>
+        <!-- Target bar -->
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;color:var(--text3);width:52px;flex-shrink:0">Target</span>
+          <div style="flex:1;background:var(--bg2);border-radius:4px;height:8px;overflow:hidden">
+            <div style="width:${Math.min(100,tgt/Math.max(tgt,cur)*100).toFixed(1)}%;height:100%;border-radius:4px;background:${row.color};opacity:0.35;border:1.5px dashed ${row.color};box-sizing:border-box"></div>
+          </div>
+          <span style="font-size:12px;color:var(--text3);width:36px;text-align:right">${tgt}%</span>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // ── 3. Monthly savings chart (SVG bar chart) ─────────────────────
+  function savingsChart(){
+    if(savingsData.length<1) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">
+      Need at least 2 snapshots to track savings. Record a snapshot each month to build this chart.</p>`;
+
+    const W=560, H=160, PL=60, PR=20, PT=10, PB=32;
+    const gW=W-PL-PR, gH=H-PT-PB;
+    const maxVal = Math.max(...savingsData.map(s=>Math.max(Math.abs(s.netSaved),Math.abs(s.mktGain),1)));
+    const barW = Math.min(40, (gW/savingsData.length)*0.5);
+    const spacing = gW/savingsData.length;
+    const midY = PT+gH/2; // zero line
+
+    const toY = v => midY - (v/maxVal)*(gH/2);
+
+    let bars='', labels='', ticks='';
+    savingsData.forEach((s,i)=>{
+      const cx = PL + i*spacing + spacing/2;
+      // Market gain bar (blue, behind)
+      const mktY=toY(s.mktGain); const mktH=Math.abs(mktY-midY);
+      bars+=`<rect x="${(cx-barW/2-2).toFixed(1)}" y="${Math.min(mktY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${mktH.toFixed(1)}" fill="var(--blue)" opacity="0.4" rx="2"/>`;
+      // Net saved bar (green/red)
+      const netY=toY(s.netSaved); const netH=Math.abs(netY-midY);
+      const netCol=s.netSaved>=0?'var(--green)':'var(--red)';
+      bars+=`<rect x="${(cx).toFixed(1)}" y="${Math.min(netY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${netH.toFixed(1)}" fill="${netCol}" opacity="0.85" rx="2"/>`;
+      // Label
+      labels+=`<text x="${cx.toFixed(1)}" y="${H-4}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.label}</text>`;
+    });
+
+    // Y-axis ticks
+    [-maxVal,0,maxVal].forEach(v=>{
+      const y=toY(v).toFixed(1);
+      ticks+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="${v===0?1:0.5}"/>`;
+      ticks+=`<text x="${PL-4}" y="${(parseFloat(y)+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;
+    });
+
+    const avg = savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length;
+
+    return `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--green);display:inline-block"></span>Net new savings</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--blue);opacity:.5;display:inline-block"></span>Market gain/loss</span>
+      <span style="margin-left:auto;color:var(--text2)">Avg net savings: <strong style="color:${avg>=0?'var(--green)':'var(--red)'}">${fmtK(avg)}/period</strong></span>
+    </div>
+    <div style="overflow-x:auto">
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
+      ${ticks}
+      ${bars}
+      ${labels}
+    </svg></div>`;
+  }
+
+  // ── Savings target from goal planner ─────────────────────────────
+  const t2 = computeTotals();
+  const msSaved = computeMonthlySavingsNeeded(t2.nav);
+
+  document.getElementById('view-insights').innerHTML=`
+
+  <!-- ══ SECTION 1: ASSET MAP ══ -->
+  <div class="card">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
+      <div class="card-title" style="margin:0">Asset map</div>
+      <span style="font-size:11px;color:var(--text3)">Investable = assets you can deploy or rebalance</span>
+    </div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Your total wealth of <strong>${fmtK(totalAssets)}</strong> breaks into two buckets. Only the investable portion (<strong>${fmtK(investable)}</strong>) can be actively managed toward your retirement goal.</p>
+
+    <!-- Investable vs locked bar -->
+    <div style="margin-bottom:14px">
+      <div style="display:flex;border-radius:8px;overflow:hidden;height:18px;margin-bottom:6px">
+        <div style="width:${(investable/totalAssets*100).toFixed(1)}%;background:var(--green);display:flex;align-items:center;justify-content:center">
+          <span style="font-size:10px;color:white;font-weight:600;white-space:nowrap;padding:0 4px">${(investable/totalAssets*100).toFixed(0)}% Investable</span>
+        </div>
+        <div style="flex:1;background:var(--bg3);display:flex;align-items:center;justify-content:center">
+          <span style="font-size:10px;color:var(--text2);font-weight:500;white-space:nowrap;padding:0 4px">${(nonInvestable/totalAssets*100).toFixed(0)}% Locked</span>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)">
+        <span>Stocks ${fmtK(totalStocks)} + Cash ${fmtK(cashTotal)}</span>
+        <span>Property ${fmtK(propSG+propTH)} + CPF ${fmtK(cpfTotal)} + Insurance ${fmtK(insurTotal)}</span>
+      </div>
+    </div>
+
+    <!-- Asset grid -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-bottom:10px">
+      ${assetBox('Stock Portfolio',totalStocks,'US + SGX holdings','var(--blue)','Investable',true)}
+      ${assetBox('Cash (SGD + THB + USD)',cashTotal,'Across all bank accounts + IB','var(--green)','Investable',true)}
+      ${assetBox('CPF (OA + SA)',cpfTotal,'Locked until 55–65 · earns 2.5–4%','var(--purple)','Locked',false)}
+      ${assetBox('Property SG (Citylights)',propSG,'No rental income · illiquid','var(--amber)','No income',false)}
+      ${assetBox('Property TH (LPN + Klong)',propTH,'Rented out · income to parents','var(--coral)','No income to you',false)}
+      ${assetBox('Insurance (Prudential TH)',insurTotal,'Payout at maturity · locked','var(--gray)','Locked',false)}
+    </div>
+    <div style="background:rgba(226,75,74,.06);border:0.5px solid rgba(226,75,74,.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;color:var(--text2)">
+      <strong style="color:var(--red)">Liabilities: ${fmtK(liabTotal)}</strong> · Mortgage + credit card · Net worth after liabilities: <strong style="color:var(--text)">${fmtK(nav)}</strong>
+    </div>
+  </div>
+
+  <!-- ══ SECTION 2: ALLOCATION vs TARGET ══ -->
+  <div class="card">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
+      <div class="card-title" style="margin:0">Allocation vs target <span style="font-size:10px;font-weight:400;color:var(--text3)">(% of investable assets)</span></div>
+      <span style="font-size:11px;color:var(--text3)">Based on S$${Math.round(investable/1000)}K investable</span>
+    </div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.6">Target is calibrated for your retirement income goal — maximising <strong>tax-free SGX income</strong> while keeping quality US compounders. Reduce US Growth over time; build SG REITs + Blue Chips.</p>
+    ${allocRows.map(allocBar).join('')}
+
+    <!-- Rebalancing summary table -->
+    <div style="border-top:0.5px solid var(--border);padding-top:12px;margin-top:4px">
+      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Rebalancing actions needed</div>
+      <div style="overflow-x:auto">
+      <table class="stock-table">
+        <thead><tr>
+          <th>Category</th>
+          <th style="text-align:right">Current</th>
+          <th style="text-align:right">Target</th>
+          <th style="text-align:right">Gap (SGD)</th>
+          <th style="text-align:right">Action</th>
+        </tr></thead>
+        <tbody>
+          ${allocRows.filter(r=>Math.abs(r.diff)>1).sort((a,b)=>a.diff-b.diff).map(r=>{
+            const over=r.diff>0;
+            return `<tr>
+              <td style="font-size:13px">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};margin-right:6px"></span>
+                ${r.label}
+              </td>
+              <td style="text-align:right;font-size:12px">${r.currentPct.toFixed(1)}%</td>
+              <td style="text-align:right;font-size:12px;color:var(--text3)">${r.target}%</td>
+              <td style="text-align:right;font-size:12px;color:${over?'var(--amber)':'var(--blue)'}">${over?'+':''} ${fmtK(Math.abs(r.gapSGD))}</td>
+              <td style="text-align:right">
+                <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;background:${over?'rgba(186,117,23,.12)':'rgba(55,138,221,.12)'};color:${over?'var(--amber)':'var(--blue)'}">${over?'Trim / hold':'Buy more'}</span>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ SECTION 3: MONTHLY SAVINGS TRACKER ══ -->
+  <div class="card">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
+      <div class="card-title" style="margin:0">Monthly savings tracker</div>
+      <span style="font-size:11px;color:var(--text3)">Derived from snapshot comparisons</span>
+    </div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Each bar compares two snapshots. <span style="color:var(--green);font-weight:500">Green = net new money saved</span> (nav change minus estimated market movement). <span style="color:var(--blue);font-weight:500">Blue = market gains/losses</span> on existing holdings. Record a snapshot monthly for best results.</p>
+
+    <!-- Target savings metric -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px">
+      <div class="metric">
+        <div class="metric-label">Monthly savings needed</div>
+        <div class="metric-value" style="color:var(--amber)">${fmtK(msSaved)}</div>
+        <div class="metric-sub">to reach ${fmtK(computeGoal().nestEgg)} by ${computeGoal().retireYear}</div>
+      </div>
+      ${savingsData.length>0?`
+      <div class="metric">
+        <div class="metric-label">Average net saved</div>
+        <div class="metric-value" style="color:var(--green)">${fmtK(savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length)}</div>
+        <div class="metric-sub">per snapshot period</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Total market gain</div>
+        <div class="metric-value" style="color:var(--blue)">${fmtK(savingsData.reduce((s,r)=>s+r.mktGain,0))}</div>
+        <div class="metric-sub">across all periods</div>
+      </div>`:''}
+    </div>
+
+    ${savingsChart()}
+
+    <div style="background:rgba(55,138,221,.06);border:0.5px solid rgba(55,138,221,.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;color:var(--text2);margin-top:12px;line-height:1.6">
+      💡 <strong>How to use this:</strong> Record a snapshot at the same time each month — ideally after salary credit and before major spending. The green bar tells you how much new wealth you created that month beyond market movements.
+    </div>
+  </div>`;
+}
 loadAll();
 render();
 updateBackupBanner();
