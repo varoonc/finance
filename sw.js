@@ -1,7 +1,7 @@
 // Net Worth Tracker — Service Worker
 // Caches the app shell for offline use. Stock prices always fetch live.
 
-const CACHE = 'nwt-v1';
+const CACHE = 'nwt-v3'; // ← bump this string every time you deploy a new version
 const SHELL = [
   './',
   './index.html',
@@ -17,13 +17,18 @@ self.addEventListener('install', e => {
   );
 });
 
-// Activate: remove old caches
+// Activate: remove old caches, claim all clients immediately
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
+});
+
+// Message handler: allow page to trigger skipWaiting
+self.addEventListener('message', e => {
+  if (e.data === 'skipWaiting') self.skipWaiting();
 });
 
 // Fetch strategy:

@@ -2537,7 +2537,49 @@ if(stocks.some(s=>!s.lastPrice)){
 
 // Register service worker for offline support and PWA install
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js').catch(()=>{});
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    // Check for updates every time the page loads
+    reg.update();
+    // When a new service worker is waiting, show update banner
+    reg.addEventListener('updatefound', () => {
+      const newSW = reg.installing;
+      newSW.addEventListener('statechange', () => {
+        if(newSW.state === 'installed' && navigator.serviceWorker.controller){
+          showUpdateBanner();
+        }
+      });
+    });
+  }).catch(()=>{});
+  // If controller changes (new SW activated), reload to get fresh app
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    window.location.reload();
+  });
+}
+
+function showUpdateBanner(){
+  const existing = document.getElementById('update-banner');
+  if(existing) return;
+  const b = document.createElement('div');
+  b.id = 'update-banner';
+  b.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1a1a18;color:#f0ede8;padding:12px 18px;border-radius:10px;display:flex;align-items:center;gap:12px;font-size:13px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.3);white-space:nowrap';
+  b.innerHTML = `<span>🆕 New version available</span>
+    <button onclick="applyUpdate()" style="background:#1D9E75;color:white;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;font-family:inherit">Update now</button>
+    <button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#9a9a96;font-size:18px;cursor:pointer;line-height:1">×</button>`;
+  document.body.appendChild(b);
+}
+
+function applyUpdate(){
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistration().then(reg=>{
+      if(reg && reg.waiting){
+        reg.waiting.postMessage('skipWaiting');
+      } else {
+        window.location.reload();
+      }
+    });
+  } else {
+    window.location.reload();
+  }
 }
 </script>
 </body>
