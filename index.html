@@ -2428,10 +2428,22 @@ function renderInsights(){
   <div class="card">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Industry exposure</div><span style="font-size:11px;color:var(--text3)">Based on current stock prices · SGD equivalent</span></div>
     <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.6">How your stock portfolio is distributed across industries.</p>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px">
-      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇺🇸 US portfolio by industry</div><div style="position:relative;height:180px"><canvas id="insUsChart" role="img" aria-label="US portfolio industry breakdown">US industry breakdown.</canvas></div><div style="margin-top:10px" id="insUsLegend"></div></div>
-      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇸🇬 SGX portfolio by sector</div><div style="position:relative;height:180px"><canvas id="insSgChart" role="img" aria-label="SGX portfolio sector breakdown">SGX sector breakdown.</canvas></div><div style="margin-top:10px" id="insSgLegend"></div></div>
-      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇹🇭 SET Thailand by sector</div><div style="position:relative;height:180px"><canvas id="insThChart" role="img" aria-label="SET Thailand sector breakdown">TH sector breakdown.</canvas></div><div style="margin-top:10px" id="insThLegend"></div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px;border-top:0.5px solid var(--border);padding-top:14px">
+      <div style="border-right:0.5px solid var(--border);padding-right:16px">
+        <div style="font-size:12px;font-weight:500;margin-bottom:8px">🇺🇸 US portfolio by industry</div>
+        <div style="position:relative;height:180px"><canvas id="insUsChart" role="img" aria-label="US portfolio industry breakdown">US industry breakdown.</canvas></div>
+        <div style="margin-top:10px" id="insUsLegend"></div>
+      </div>
+      <div style="border-right:0.5px solid var(--border);padding-right:16px">
+        <div style="font-size:12px;font-weight:500;margin-bottom:8px">🇸🇬 SGX portfolio by sector</div>
+        <div style="position:relative;height:180px"><canvas id="insSgChart" role="img" aria-label="SGX portfolio sector breakdown">SGX sector breakdown.</canvas></div>
+        <div style="margin-top:10px" id="insSgLegend"></div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:500;margin-bottom:8px">🇹🇭 SET Thailand by sector</div>
+        <div style="position:relative;height:180px"><canvas id="insThChart" role="img" aria-label="SET Thailand sector breakdown">TH sector breakdown.</canvas></div>
+        <div style="margin-top:10px" id="insThLegend"></div>
+      </div>
     </div>
     <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
       <span>Stock detail — by industry</span>
@@ -2516,14 +2528,21 @@ function _buildIndustryCharts(){
     const el=document.getElementById(id); if(!el) return;
     el.innerHTML='';
     if(!entries.length){el.innerHTML='<p style="font-size:11px;color:var(--text3)">No positions yet.</p>';return;}
-    entries.forEach(([lbl,val])=>{
-      const col=colorMap[lbl];
-      el.innerHTML+=`<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px;font-size:11px">
-        <span style="width:9px;height:9px;border-radius:2px;background:${col};flex-shrink:0;margin-top:2px;display:inline-block"></span>
-        <span style="color:var(--text2);flex:1">${lbl}</span>
-        <span style="color:var(--text);font-weight:500;white-space:nowrap">${fmtK(val)}<span style="color:var(--text3);margin-left:3px">${(val/total*100).toFixed(1)}%</span></span>
-      </div>`;
-    });
+    el.innerHTML = '';
+    if(!entries.length){el.innerHTML='<p style="font-size:11px;color:var(--text3)">No positions yet.</p>';return;}
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      ${entries.map(([lbl,val])=>{
+        const col=colorMap[lbl];
+        return `<tr>
+          <td style="padding:2px 6px 2px 0;white-space:nowrap;color:var(--text2)">
+            <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${col};margin-right:5px;vertical-align:middle"></span>${lbl}
+          </td>
+          <td style="padding:2px 0;text-align:right;white-space:nowrap;font-weight:500;color:var(--text)">
+            ${fmtK(val)} <span style="color:var(--text3)">${(val/total*100).toFixed(1)}%</span>
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>`;
   }
 
   makePie('insUsChart',usEntries,usTotal,usColorMap);
