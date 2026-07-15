@@ -201,6 +201,7 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
     <select id="f-exchange" onchange="onExchangeChange()">
       <option value="US">🇺🇸 US Market (USD)</option>
       <option value="SG">🇸🇬 SGX Singapore (SGD)</option>
+      <option value="TH">🇹🇭 SET Thailand (THB)</option>
     </select>
     <label>Stock ticker</label>
     <div style="display:flex;gap:6px;margin-bottom:0">
@@ -332,7 +333,7 @@ function fmtK(v,currency='SGD'){
   return (v<0?'-':'')+sym+Math.round(a).toLocaleString();
 }
 function fmtPrice(v,currency='USD'){
-  const sym=currency==='USD'?'US$':'S$';
+  const sym = currency==='USD' ? 'US$' : currency==='THB' ? '฿' : currency==='EUR' ? '€' : 'S$';
   return sym+(+v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 function fmtFull(v){return 'SGD '+Math.abs(Math.round(v)).toLocaleString();}
@@ -463,9 +464,10 @@ function loadAll(){
 
 function normaliseStocks(){
   stocks = stocks.map(st => {
+    const exch = String(st.exchange||'US').toUpperCase().trim();
     let u = {
       ...st,
-      exchange: String(st.exchange||'US').toUpperCase().trim()==='SG' ? 'SG' : 'US'
+      exchange: exch==='SG' ? 'SG' : exch==='TH' ? 'TH' : 'US'
     };
     if(!u.nameLocked && TICKER_NAME_LOCK[u.ticker]) u.companyName = TICKER_NAME_LOCK[u.ticker];
     return u;
@@ -554,11 +556,11 @@ function fetchWithDeadline(url, ms=6000) {
   ]);
 }
 
-// Wrap a Yahoo URL in a proxy with effective cache-busting.
-// Key insight: allorigins caches by the value of its ?url= parameter.
-// So the bust timestamp must be INSIDE the Yahoo URL (as an extra param),
-// not appended after it on the proxy URL. We use a harmless param name
-// that Yahoo's API silently ignores but allorigins treats as a cache miss.
+// Wrap a Yahoo URL in a proxy with cache-busting.
+// The _b timestamp is embedded INSIDE the Yahoo URL so allorigins sees a
+// unique ?url= value each time — defeating its caching layer.
+// NOTE: Only use bustingProxyWrap for price/chart APIs — Yahoo's search
+// endpoint rejects unknown parameters and returns empty results.
 function proxyWrap(proxyFn, yahooUrl, ms=6000) {
   const bust = `&_b=${Date.now()}`;
   const bustYahooUrl = yahooUrl + bust;
@@ -569,14 +571,30 @@ function proxyWrap(proxyFn, yahooUrl, ms=6000) {
   ]);
 }
 
-// Build Yahoo Finance ticker symbol
+// Plain proxy wrap WITHOUT cache-busting — for search endpoint which rejects unknown params
+function proxyWrapSearch(proxyFn, yahooUrl, ms=6000) {
+  const proxied = proxyFn(yahooUrl);
+  // Add bust on the proxy URL itself (not inside Yahoo URL) — less effective but harmless
+  const bustProxy = proxied + (proxied.includes('?') ? '&' : '?') + `_t=${Date.now()}`;
+  return Promise.race([
+    fetch(bustProxy),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
+}
+
 function yahooSymbol(st) {
-  if (st.exchange !== 'SG') return st.ticker;
-  const t = st.ticker.trim();
-  if (t.endsWith('.SI')) return t;
-  // "SET EUR" is the Euro counter of Stoneweg Europe Stapled Trust — Yahoo ticker is SET.SI
-  if (t === 'SET EUR') return 'SET.SI';
-  return t + '.SI';
+  if (st.exchange === 'SG') {
+    const t = st.ticker.trim();
+    if (t.endsWith('.SI')) return t;
+    if (t === 'SET EUR') return 'SET.SI';
+    return t + '.SI';
+  }
+  if (st.exchange === 'TH') {
+    const t = st.ticker.trim();
+    if (t.endsWith('.BK')) return t;
+    return t + '.BK';
+  }
+  return st.ticker; // US stocks use ticker as-is
 }
 
 // Known ticker name overrides — add entries here if Yahoo returns wrong company name
@@ -767,15 +785,23 @@ async function refreshAllPrices(forceAll=false) {
 }
 
 async function searchYahoo(query){
-  const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0`;
+  const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
   for (let pi = 0; pi < PROXIES.length; pi++) {
     try {
-      const r = await proxyWrap(PROXIES[pi], yahooUrl, 5000);
+      // Use proxyWrapSearch — search endpoint rejects _b timestamp inside URL
+      const r = await proxyWrapSearch(PROXIES[pi], yahooUrl, 6000);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const text = await r.text();
       if (!text || text[0] === '<') throw new Error('Blocked');
       const d = JSON.parse(text);
-      return (d?.quotes||[]).filter(q => q.quoteType==='EQUITY' || q.quoteType==='ETF');
+      // Include EQUITY, ETF, REIT, TRUST — covers SGX REITs, TH stocks, US stocks
+      const results = (d?.quotes||[]).filter(q => {
+        const qt = (q.quoteType||'').toUpperCase();
+        return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||
+               qt.includes('EQUITY')||qt.includes('REIT')||qt.includes('TRUST');
+      });
+      // Fallback: if filter removed everything, return all (handles unusual quoteTypes)
+      return results.length ? results : (d?.quotes||[]).slice(0,6);
     } catch(e) { /* try next proxy */ }
   }
   return [];
@@ -797,6 +823,7 @@ function getStockValueSGD(st){
   let rate = 1;
   if(st.currency==='USD' || st.exchange==='US') rate = usdSgdRate;
   else if(st.currency==='EUR') rate = eurSgdRate;
+  else if(st.currency==='THB' || st.exchange==='TH') rate = thbSgdRate;
   // SGD-priced SGX stocks: rate stays 1
   return st.lastPrice * st.units * rate;
 }
@@ -880,7 +907,16 @@ function setModalType(t){
   document.getElementById('type-btn-asset').style.color=t==='asset'?'var(--bg)':'var(--text)';
 }
 
-function onExchangeChange(){ document.getElementById('search-results').innerHTML=''; document.getElementById('stock-fetched').style.display='none'; fetchingTicker=null; }
+function onExchangeChange(){
+  document.getElementById('search-results').innerHTML='';
+  document.getElementById('stock-fetched').style.display='none';
+  fetchingTicker=null;
+  const exch=document.getElementById('f-exchange').value;
+  const input=document.getElementById('f-ticker');
+  if(exch==='TH') input.placeholder='e.g. PTTEP, SCB, ADVANC, BBL, KBANK';
+  else if(exch==='SG') input.placeholder='e.g. C38U, O39, A17U';
+  else input.placeholder='e.g. AAPL, MSFT, NVDA';
+}
 
 function onTickerInput(){
   clearTimeout(searchDebounce);
@@ -893,44 +929,64 @@ async function searchTicker(){
   const raw=document.getElementById('f-ticker').value.trim();
   if(!raw) return;
   const exch=document.getElementById('f-exchange').value;
-  const query=raw+(exch==='SG'&&!raw.endsWith('.SI')?'.SI':' '+raw);
+  // Pass the suffixed query so Yahoo finds the right exchange listing
+  const query = exch==='SG' ? (raw.endsWith('.SI')?raw:raw+'.SI')
+              : exch==='TH' ? (raw.endsWith('.BK')?raw:raw+'.BK')
+              : raw;
   document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--text3);padding:6px 0">Searching…</div>';
   document.getElementById('stock-fetched').style.display='none';
   try{
-    const results=await searchYahoo(raw);
-    if(!results.length){ document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--red);padding:6px 0">No results found. Try a different ticker.</div>'; return; }
-    const html=results.slice(0,6).map(r=>`
-      <div class="search-item" onclick="selectSearchResult('${r.symbol}','${(r.longname||r.shortname||r.symbol).replace(/'/g,"\\'")}','${r.exchange||''}')">
-        <span class="search-ticker">${r.symbol}</span>
-        <span class="search-name">${r.longname||r.shortname||''}</span>
-        <span class="search-exch">${r.exchange||''}</span>
-      </div>`).join('');
-    document.getElementById('search-results').innerHTML=`<div class="search-results">${html}</div>`;
+    const results=await searchYahoo(query);
+    if(!results.length){
+      // Fallback: try without suffix in case Yahoo doesn't like it
+      const fallback = await searchYahoo(raw);
+      if(!fallback.length){
+        document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--red);padding:6px 0">No results found. Try entering the full ticker (e.g. PTTEP, N2IU).</div>';
+        return;
+      }
+      showSearchResults(fallback);
+      return;
+    }
+    showSearchResults(results);
   }catch(e){
     document.getElementById('search-results').innerHTML='<div style="font-size:12px;color:var(--red);padding:6px 0">Search failed. Check connection.</div>';
   }
 }
 
-async function selectSearchResult(ticker,name,exch){
-  document.getElementById('f-ticker').value=ticker;
+function showSearchResults(results){
+  const html=results.slice(0,6).map(r=>`
+    <div class="search-item" onclick="selectSearchResult('${r.symbol}','${(r.longname||r.shortname||r.symbol).replace(/'/g,"\\'")}','${r.exchange||''}')">
+      <span class="search-ticker">${r.symbol}</span>
+      <span class="search-name">${r.longname||r.shortname||''}</span>
+      <span class="search-exch">${r.exchange||''}</span>
+    </div>`).join('');
+  document.getElementById('search-results').innerHTML=`<div class="search-results">${html}</div>`;
+}
+
+async function selectSearchResult(symbol, name, yahooExch){
+  // Strip exchange suffix — Yahoo returns PTTEP.BK, N2IU.SI etc.
+  // We store clean ticker; yahooSymbol() adds the suffix back when fetching
+  const exchange = document.getElementById('f-exchange').value;
+  const cleanTicker = symbol.replace(/\.(BK|SI|HK|L|AX|TO)$/i,'');
+  document.getElementById('f-ticker').value = cleanTicker;
   document.getElementById('search-results').innerHTML='';
   const fetched=document.getElementById('stock-fetched');
   fetched.style.display='block';
   fetched.innerHTML='<span style="color:var(--text3)">Fetching price…</span>';
-  fetchingTicker=ticker;
-  const exchange=document.getElementById('f-exchange').value;
+  fetchingTicker=cleanTicker;
   try{
-    const tempSt={ticker,exchange,companyName:name,currency:exchange==='SG'?'SGD':'USD'};
-    const q=await fetchQuote(tempSt,0);
-    fetchingTicker=ticker;
+    const currency = exchange==='SG'?'SGD' : exchange==='TH'?'THB' : 'USD';
+    const tempSt={ticker:cleanTicker, exchange, companyName:name, currency};
+    const q=await fetchQuote(tempSt);
+    if(fetchingTicker!==cleanTicker) return; // user changed ticker during fetch
     const chg=q.change!=null?`<span style="color:${q.change>=0?'var(--green)':'var(--red)'};margin-left:8px">${q.change>=0?'+':''}${q.change.toFixed(2)}%</span>`:'';
     const src=q.source?`<span style="font-size:10px;color:var(--text3);margin-left:6px">via ${q.source}</span>`:'';
     fetched.innerHTML=`
       <div style="font-weight:600;margin-bottom:3px">${q.longName||name}</div>
-      <div style="color:var(--text2);font-size:12px">${ticker} · ${q.currency}${src}</div>
-      <div style="font-size:15px;font-weight:600;margin-top:6px">${fmtPrice(q.price,q.currency)}${chg}</div>`;
+      <div style="color:var(--text2);font-size:12px">${cleanTicker} · ${q.currency||currency}${src}</div>
+      <div style="font-size:15px;font-weight:600;margin-top:6px">${fmtPrice(q.price,q.currency||currency)}${chg}</div>`;
   }catch(e){
-    fetched.innerHTML=`<div style="color:var(--red);font-size:12px">Could not fetch price for ${ticker}. You can still add it — price will load on next refresh.</div>`;
+    fetched.innerHTML=`<div style="color:var(--amber);font-size:12px">⚠ Could not fetch price for ${cleanTicker}. You can still add it — price will load on next refresh.</div>`;
   }
 }
 
@@ -940,15 +996,27 @@ async function submitModal(){
     const exchange=document.getElementById('f-exchange').value;
     const units=parseFloat(document.getElementById('f-units').value)||0;
     if(!ticker){ document.getElementById('f-ticker').focus(); return; }
+    if(units<=0){ document.getElementById('f-units').focus(); return; }
     const btn=document.getElementById('submit-btn');
     btn.disabled=true; btn.textContent='Adding…';
-    let price=null,change=null,longName=ticker,currency=exchange==='SG'?'SGD':'USD';
+    // Strip exchange suffixes if user typed them
+    const cleanTicker = ticker.replace(/\.(BK|SI|HK|L|AX|TO)$/i,'');
+    const currency = exchange==='SG' ? 'SGD' : exchange==='TH' ? 'THB' : 'USD';
+    let price=null, change=null, longName=cleanTicker, resolvedCurrency=currency;
     try{
-      const tempSt={ticker,exchange,companyName:longName,currency};
-      const q=await fetchQuote(tempSt,0);
-      price=q.price; change=q.change; longName=q.longName||ticker; currency=q.currency||currency;
+      const tempSt={ticker:cleanTicker, exchange, companyName:longName, currency};
+      const q=await fetchQuote(tempSt);
+      price=q.price; change=q.change; longName=q.longName||cleanTicker; resolvedCurrency=q.currency||currency;
     }catch(e){ console.warn('Price fetch on add failed:',e.message); }
-    stocks.push({id:uid(),ticker,exchange,companyName:longName,currency,units,lastPrice:price,lastChange:change,lastUpdated:price?new Date().toISOString():null});
+    if(editStockId){
+      // Editing existing stock
+      stocks=stocks.map(s=>s.id===editStockId
+        ?{...s,ticker:cleanTicker,exchange,companyName:longName,currency:resolvedCurrency,units,lastPrice:price,lastChange:change,lastUpdated:price?new Date().toISOString():s.lastUpdated}
+        :s);
+      editStockId=null;
+    } else {
+      stocks.push({id:uid(),ticker:cleanTicker,exchange,companyName:longName,currency:resolvedCurrency,units,lastPrice:price,lastChange:change,lastUpdated:price?new Date().toISOString():null,priceSource:price?'Yahoo':null});
+    }
     btn.disabled=false; btn.textContent='Add';
     closeModal(); saveAll(); render();
   } else {
@@ -1486,7 +1554,7 @@ function renderDashboard(){
 }
 
 // Sort state per exchange — persists while portfolio tab is open
-const _sortState = { US: {col:'ticker', dir:1}, SG: {col:'ticker', dir:1} };
+const _sortState = { US: {col:'ticker', dir:1}, SG: {col:'ticker', dir:1}, TH: {col:'ticker', dir:1} };
 
 function sortStocks(exchange, col){
   const s = _sortState[exchange];
@@ -1496,17 +1564,28 @@ function sortStocks(exchange, col){
 }
 
 // Dividend tab sort state
-let _divSort = { col: 'annualNet', dir: -1 }; // default: highest net income first
+// Per-market sort state for Dividends tab (independent per table)
+let _divSort = {
+  US: { col: 'annualNet', dir: -1 },
+  SG: { col: 'annualNet', dir: -1 },
+  TH: { col: 'annualNet', dir: -1 },
+};
 
-function sortDividends(col){
-  if(_divSort.col === col) _divSort.dir *= -1;
-  else { _divSort.col = col; _divSort.dir = col==='ticker'||col==='name' ? 1 : -1; }
+function sortDividendMarket(market, col){
+  const s = _divSort[market];
+  if(!s) return;
+  if(s.col === col) s.dir *= -1;
+  else { s.col = col; s.dir = (col==='ticker'||col==='name') ? 1 : -1; }
   renderDividends();
 }
+
+// Keep sortDividends as alias for backward compat (not used in new layout)
+function sortDividends(col){ sortDividendMarket('US', col); }
 
 function renderPortfolio(){
   const usStocks=stocks.filter(s=>s.exchange==='US');
   const sgStocks=stocks.filter(s=>s.exchange==='SG');
+  const thStocks=stocks.filter(s=>s.exchange==='TH');
   const lastUpdated=stocks.filter(s=>s.lastUpdated).map(s=>s.lastUpdated).sort().pop();
 
   function sortList(list, exchange){
@@ -1585,6 +1664,8 @@ function renderPortfolio(){
     <div class="card">${buildTable(usStocks,'US')}</div>
     <div class="section-hdr"><span class="section-dot" style="background:var(--green)"></span><span class="section-label">🇸🇬 SGX Portfolio (SGD)</span></div>
     <div class="card">${buildTable(sgStocks,'SG')}</div>
+    ${thStocks.length>0?`<div class="section-hdr"><span class="section-dot" style="background:var(--amber)"></span><span class="section-label">🇹🇭 SET Thailand Portfolio (THB) <span style="font-size:11px;color:var(--text3);font-weight:400">· −10% WHT on dividends</span></span></div>
+    <div class="card">${buildTable(thStocks,'TH')}</div>`:''}
     <button class="btn btn-block" onclick="openAddModal()">+ Add stock position</button>`;
 }
 
@@ -1801,6 +1882,14 @@ const DIVIDEND_DEFAULTS = {
   'BWCU':  { dps: 0, freq: 'none', note: '⚠ Trading & distributions suspended since Aug 2023 (EC World REIT)' },
   // SGX generic tickers
   'D05':   { dps: 3.06,  freq: 'quarterly' },
+  'N2IU':  { dps: 0.085, freq: 'semi-annual' }, // Mapletree Pan Asia Commercial Trust — approx FY2025 DPU
+  // SET Thailand stocks — DPS in THB, 10% withholding tax applies
+  'PTTEP': { dps: 9.63,  freq: 'semi-annual' },
+  'PTT':   { dps: 0.95,  freq: 'annual' },       // PTT PCL — approx FY2025 DPS in THB, ~5% yield
+  'SCB':   { dps: 11.28, freq: 'semi-annual' },
+  'BBL':   { dps: 10.00, freq: 'semi-annual' },
+  'ADVANC':{ dps: 17.50, freq: 'semi-annual' },
+  'KBANK': { dps: 9.00,  freq: 'semi-annual' },
 };
 
 function getDivInfo(st){
@@ -1812,11 +1901,11 @@ function getDivInfo(st){
 function getDivSGD(st){
   const {dps} = getDivInfo(st);
   if(!dps) return 0;
-  // Convert to SGD
   if(st.exchange==='US'){
     if(st.currency==='EUR') return dps * eurSgdRate;
     return dps * usdSgdRate;
   }
+  if(st.exchange==='TH' || st.currency==='THB') return dps * thbSgdRate;
   return dps; // SGX already in SGD
 }
 
@@ -1824,13 +1913,15 @@ function renderDividends(){
   const GOAL_MONTHLY = 10000;
   const US_WHT = 0.30;  // 30% US withholding tax — no SG-US tax treaty
   const SG_WHT = 0.00;  // Singapore dividends: zero withholding for SG residents
+  const TH_WHT = 0.10;  // 10% Thailand withholding tax — flat rate for all investors
   const FREQ_LABEL = { 'quarterly':'Quarterly','semi-annual':'Semi-annual','annual':'Annual','monthly':'Monthly','none':'None' };
 
   // Build rows — each row carries both gross and net figures
   const rows = stocks.map(st=>{
     const {dps, freq, note} = getDivInfo(st);
     const isUS = st.exchange==='US';
-    const wht  = isUS ? US_WHT : SG_WHT;
+    const isTH = st.exchange==='TH';
+    const wht  = isUS ? US_WHT : isTH ? TH_WHT : SG_WHT;
     const divSGD      = getDivSGD(st);                    // gross per unit in SGD
     const divSGDNet   = divSGD * (1 - wht);               // after withholding
     const annualGross = divSGD * st.units;
@@ -1839,7 +1930,7 @@ function renderDividends(){
     const monthlyNet  = annualNet / 12;
     const yieldPct    = st.lastPrice ? (dps / st.lastPrice * 100) : null;
     const yieldNetPct = yieldPct != null ? yieldPct * (1 - wht) : null;
-    return { st, dps, freq, note, wht, isUS, divSGD, divSGDNet, annualGross, annualNet, taxDrag, monthlyNet, yieldPct, yieldNetPct };
+    return { st, dps, freq, note, wht, isUS, isTH, divSGD, divSGDNet, annualGross, annualNet, taxDrag, monthlyNet, yieldPct, yieldNetPct };
   });
 
   const totalGross   = rows.reduce((s,r)=>s+r.annualGross, 0);
@@ -1848,21 +1939,25 @@ function renderDividends(){
   const totalMonthly = totalNet / 12;
   const goalPct      = Math.min(100, Math.round(totalMonthly / GOAL_MONTHLY * 100));
 
-  // US vs SG breakdown
+  // US vs SG vs TH breakdown
   const usGross = rows.filter(r=>r.isUS).reduce((s,r)=>s+r.annualGross,0);
   const usNet   = rows.filter(r=>r.isUS).reduce((s,r)=>s+r.annualNet,0);
-  const sgNet   = rows.filter(r=>!r.isUS).reduce((s,r)=>s+r.annualNet,0);
+  const sgNet   = rows.filter(r=>!r.isUS&&!r.isTH).reduce((s,r)=>s+r.annualNet,0);
+  const thGross = rows.filter(r=>r.isTH).reduce((s,r)=>s+r.annualGross,0);
+  const thNet   = rows.filter(r=>r.isTH).reduce((s,r)=>s+r.annualNet,0);
 
   const paying    = rows.filter(r=>r.annualGross>0).sort((a,b)=>b.annualNet-a.annualNet);
   const suspended = rows.filter(r=>r.annualGross===0 && r.note);
   const noPay     = rows.filter(r=>r.annualGross===0 && !r.note);
 
   function tableRow(r){
-    const {st,dps,freq,isUS,wht,annualGross,annualNet,taxDrag,monthlyNet,yieldPct,yieldNetPct} = r;
-    const cur = isUS ? 'US$' : 'S$';
+    const {st,dps,freq,isUS,isTH,wht,annualGross,annualNet,taxDrag,monthlyNet,yieldPct,yieldNetPct} = r;
+    const cur = isUS ? 'US$' : isTH ? '฿' : 'S$';
     const dpsStr     = dps>0 ? `${cur}${dps.toFixed(2)}` : '—';
     const whtBadge   = isUS
-      ? `<span style="font-size:9px;background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 4px;margin-left:4px">-30%</span>`
+      ? `<span style="font-size:9px;background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 4px;margin-left:4px">-30% WHT</span>`
+      : isTH
+      ? `<span style="font-size:9px;background:rgba(186,117,23,.12);color:var(--amber);border-radius:3px;padding:1px 4px;margin-left:4px">-10% WHT</span>`
       : `<span style="font-size:9px;background:rgba(29,158,117,.12);color:var(--green);border-radius:3px;padding:1px 4px;margin-left:4px">Tax-free</span>`;
     const yieldStr   = yieldNetPct!=null && dps>0 ? `${yieldNetPct.toFixed(1)}%` : '—';
     const taxStr     = taxDrag>0 ? `<span style="color:var(--red);font-size:11px">−${fmtK(taxDrag)}</span>` : '—';
@@ -1883,184 +1978,154 @@ function renderDividends(){
     </tr>`;
   }
 
-  // Sort paying rows
-  const sortedPaying = [...paying].sort((a,b)=>{
-    let av, bv;
-    const col = _divSort.col;
-    if     (col==='ticker')    { av=a.st.ticker;        bv=b.st.ticker; }
-    else if(col==='name')      { av=a.st.companyName||''; bv=b.st.companyName||''; }
-    else if(col==='units')     { av=a.st.units;         bv=b.st.units; }
-    else if(col==='dps')       { av=a.dps;              bv=b.dps; }
-    else if(col==='yieldNet')  { av=a.yieldNetPct||0;   bv=b.yieldNetPct||0; }
-    else if(col==='gross')     { av=a.annualGross;       bv=b.annualGross; }
-    else if(col==='tax')       { av=a.taxDrag;          bv=b.taxDrag; }
-    else if(col==='annualNet') { av=a.annualNet;        bv=b.annualNet; }
-    else if(col==='monthlyNet'){ av=a.monthlyNet;       bv=b.monthlyNet; }
-    if(typeof av==='string') return _divSort.dir * av.localeCompare(bv);
-    return _divSort.dir * ((av||0) - (bv||0));
-  });
 
-  function divTh(col, label, align='right'){
-    const active = _divSort.col===col;
-    const arrow  = active ? (_divSort.dir===1 ? ' ↑' : ' ↓') : '';
+  // ── Per-market sort state (independent per table) ─────────────────
+  function sortedRows(list, market){
+    const s = _divSort[market] || {col:'annualNet', dir:-1};
+    return [...list].sort((a,b)=>{
+      let av, bv;
+      if     (s.col==='ticker')    { av=a.st.ticker;          bv=b.st.ticker; }
+      else if(s.col==='name')      { av=a.st.companyName||''; bv=b.st.companyName||''; }
+      else if(s.col==='units')     { av=a.st.units;           bv=b.st.units; }
+      else if(s.col==='dps')       { av=a.dps;                bv=b.dps; }
+      else if(s.col==='yieldNet')  { av=a.yieldNetPct||0;     bv=b.yieldNetPct||0; }
+      else if(s.col==='gross')     { av=a.annualGross;         bv=b.annualGross; }
+      else if(s.col==='tax')       { av=a.taxDrag;             bv=b.taxDrag; }
+      else if(s.col==='annualNet') { av=a.annualNet;           bv=b.annualNet; }
+      else if(s.col==='monthlyNet'){ av=a.monthlyNet;          bv=b.monthlyNet; }
+      if(typeof av==='string') return s.dir * av.localeCompare(bv);
+      return s.dir * ((av||0) - (bv||0));
+    });
+  }
+
+  function mTh(market, col, label, align='right'){
+    const s = _divSort[market] || {col:'annualNet', dir:-1};
+    const active = s.col===col;
+    const arrow  = active ? (s.dir===1 ? ' ↑' : ' ↓') : '';
     return `<th style="cursor:pointer;user-select:none;white-space:nowrap;text-align:${align}"
-      onclick="sortDividends('${col}')" title="Sort by ${label}">
+      onclick="sortDividendMarket('${market}','${col}')" title="Sort by ${label}">
       <span style="color:${active?'var(--blue)':'var(--text3)'};font-weight:${active?'600':'500'}">${label}${arrow}</span>
     </th>`;
   }
 
+  function marketTable(list, market, accentColor, gross, tax, net){
+    if(!list.length) return '<p class="empty" style="font-size:12px;padding:8px 0">No dividend-paying positions in this market yet.</p>';
+    const FREQ_LBL = {'quarterly':'Quarterly','semi-annual':'Semi-annual','annual':'Annual','monthly':'Monthly','none':'None'};
+    const sorted = sortedRows(list, market);
+    const tRows = sorted.map(r=>{
+      const {st,dps,freq,annualGross,annualNet,taxDrag,monthlyNet,yieldNetPct}=r;
+      const cur=market==='US'?'US$':market==='TH'?'฿':'S$';
+      const dpsStr=dps>0?`${cur}${dps.toFixed(2)}`:'—';
+      const yldStr=yieldNetPct!=null&&dps>0?`${yieldNetPct.toFixed(1)}%`:'—';
+      const yldCol=(yieldNetPct||0)>5?'var(--green)':(yieldNetPct||0)>2?'var(--blue)':'var(--text2)';
+      const taxStr=taxDrag>0?`<span style="color:var(--red);font-size:11px">−${fmtK(taxDrag)}</span>`:'—';
+      return `<tr>
+        <td style="font-family:monospace;font-size:12px;font-weight:600;color:${accentColor}">${st.ticker}</td>
+        <td style="font-size:12px;color:var(--text2)" class="hide-mobile">${st.companyName}</td>
+        <td style="text-align:right;font-size:12px">${st.units.toLocaleString()}</td>
+        <td style="text-align:right;font-size:12px">${dpsStr}</td>
+        <td style="text-align:right;font-size:12px;color:var(--text2)">${FREQ_LBL[freq]||freq}</td>
+        <td style="text-align:right;font-size:12px;color:${yldCol}">${yldStr}</td>
+        <td style="text-align:right;font-size:12px;color:var(--text3)">${annualGross>0?fmtK(annualGross):'—'}</td>
+        <td style="text-align:right;font-size:11px">${taxStr}</td>
+        <td style="text-align:right;font-weight:600;font-size:13px;color:var(--green)">${annualNet>0?fmtK(annualNet):'—'}</td>
+        <td style="text-align:right;font-size:12px;color:var(--text2)">${monthlyNet>0?fmtK(monthlyNet):''}</td>
+        <td style="text-align:right"><button class="btn btn-sm" onclick="openDivEdit('${st.id}')" style="padding:3px 8px;font-size:11px">Edit</button></td>
+      </tr>`;
+    }).join('');
+    const totRow=`<tr style="border-top:1.5px solid var(--border)">
+      <td colspan="2" style="font-weight:600;font-size:13px;padding:8px">Total</td>
+      <td></td><td></td><td></td><td></td>
+      <td style="text-align:right;font-size:12px;color:var(--text3)">${fmtK(gross)}</td>
+      <td style="text-align:right;font-size:12px;color:var(--red)">−${fmtK(tax)}</td>
+      <td style="text-align:right;font-weight:700;font-size:14px;color:var(--green)">${fmtK(net)}</td>
+      <td style="text-align:right;font-weight:600;font-size:13px;color:var(--green)">${fmtK(net/12)}</td>
+      <td></td>
+    </tr>`;
+    const nameTh=`<th class="hide-mobile" style="cursor:pointer;user-select:none" onclick="sortDividendMarket('${market}','name')">
+      <span style="color:${(_divSort[market]||{}).col==='name'?'var(--blue)':'var(--text3)'};font-weight:${(_divSort[market]||{}).col==='name'?'600':'500'}">Company${(_divSort[market]||{}).col==='name'?((_divSort[market].dir===1?' ↑':' ↓')):''}  </span></th>`;
+    return `<div style="overflow-x:auto">
+    <table class="stock-table">
+      <thead><tr>
+        ${mTh(market,'ticker','Ticker','left')}${nameTh}
+        ${mTh(market,'units','Units')}${mTh(market,'dps','DPS')}
+        <th style="text-align:right;color:var(--text3);white-space:nowrap">Frequency</th>
+        ${mTh(market,'yieldNet','Net yield')}${mTh(market,'gross','Gross (SGD)')}
+        ${mTh(market,'tax','Tax withheld')}${mTh(market,'annualNet','Net (SGD)')}
+        ${mTh(market,'monthlyNet','/mo net')}<th></th>
+      </tr></thead>
+      <tbody>${tRows}${totRow}</tbody>
+    </table></div>`;
+  }
+
+  const usRows=paying.filter(r=>r.isUS);
+  const sgRows=paying.filter(r=>!r.isUS&&!r.isTH);
+  const thRows=paying.filter(r=>r.isTH);
+
   document.getElementById('view-dividends').innerHTML=`
-    <!-- Tax context banner -->
     <div style="background:rgba(55,138,221,.07);border:0.5px solid rgba(55,138,221,.25);border-radius:var(--radius);padding:10px 14px;margin-bottom:12px;font-size:12px;color:var(--text2);line-height:1.7">
       <strong style="color:var(--text)">🇸🇬 Singapore resident tax treatment:</strong>
-      <span style="background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">US stocks −30% withholding</span> deducted at source before dividends reach your account. Singapore has no tax treaty with the US so the full rate applies — you cannot reclaim it.
-      <span style="background:rgba(29,158,117,.12);color:var(--green);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">SGX stocks 0% tax-free</span> under Singapore's one-tier system. All figures below show what you actually receive after withholding.
+      <span style="background:rgba(226,75,74,.12);color:var(--red);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">US stocks −30% WHT</span> deducted at source.
+      <span style="background:rgba(186,117,23,.12);color:var(--amber);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">Thailand stocks −10% WHT</span> flat rate.
+      <span style="background:rgba(29,158,117,.12);color:var(--green);border-radius:3px;padding:1px 6px;margin:0 4px;font-weight:500">SGX stocks 0% tax-free</span>
     </div>
-
-    <!-- Summary metrics — all NET of withholding -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:9px;margin-bottom:12px">
-      <div class="metric">
-        <div class="metric-label">Net annual income</div>
-        <div class="metric-value" style="color:var(--green)">${fmtK(totalNet)}</div>
-        <div class="metric-sub">after all withholding tax</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">Net monthly income</div>
-        <div class="metric-value">${fmtK(totalMonthly)}</div>
-        <div class="metric-sub">what you actually receive</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">Annual tax drag (US WHT)</div>
-        <div class="metric-value" style="color:var(--red)">${fmtK(totalTaxDrag)}</div>
-        <div class="metric-sub">lost to 30% US withholding</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">Dividends cover goal</div>
-        <div class="metric-value" style="color:${goalPct>=100?'var(--green)':goalPct>=50?'var(--blue)':'var(--amber)'}">${goalPct}%</div>
-        <div class="metric-sub">${goalPct>=100?'🎉 Fully covered!':'S$'+Math.round(GOAL_MONTHLY-totalMonthly).toLocaleString()+'/mo gap'}</div>
-      </div>
+      <div class="metric"><div class="metric-label">Net annual income</div><div class="metric-value" style="color:var(--green)">${fmtK(totalNet)}</div><div class="metric-sub">after all withholding</div></div>
+      <div class="metric"><div class="metric-label">Net monthly income</div><div class="metric-value">${fmtK(totalMonthly)}</div><div class="metric-sub">what you actually receive</div></div>
+      <div class="metric"><div class="metric-label">Annual tax drag</div><div class="metric-value" style="color:var(--red)">${fmtK(totalTaxDrag)}</div><div class="metric-sub">US 30% + TH 10% WHT</div></div>
+      <div class="metric"><div class="metric-label">Dividends cover goal</div><div class="metric-value" style="color:${goalPct>=100?'var(--green)':goalPct>=50?'var(--blue)':'var(--amber)'}">${goalPct}%</div><div class="metric-sub">${goalPct>=100?'🎉 Fully covered!':'S$'+Math.round(GOAL_MONTHLY-totalMonthly).toLocaleString()+'/mo gap'}</div></div>
     </div>
-
-    <!-- US vs SG income breakdown -->
     <div class="card" style="margin-bottom:12px">
       <div class="card-title">Income by market — gross vs net after withholding</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
         <div style="background:rgba(226,75,74,.06);border:0.5px solid rgba(226,75,74,.2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;font-weight:500;color:var(--red);margin-bottom:6px">🇺🇸 US Portfolio (−30% WHT)</div>
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:var(--text2)">Gross declared</span>
-            <span style="color:var(--text3)">${fmtK(usGross)}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:var(--text2)">Withheld (30%)</span>
-            <span style="color:var(--red)">−${fmtK(usGross-usNet)}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px">
-            <span>You receive</span>
-            <span style="color:var(--green)">${fmtK(usNet)}</span>
-          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Gross declared</span><span style="color:var(--text3)">${fmtK(usGross)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Withheld (30%)</span><span style="color:var(--red)">−${fmtK(usGross-usNet)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px"><span>You receive</span><span style="color:var(--green)">${fmtK(usNet)}</span></div>
+        </div>
+        <div style="background:rgba(186,117,23,.06);border:0.5px solid rgba(186,117,23,.2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;font-weight:500;color:var(--amber);margin-bottom:6px">🇹🇭 Thailand SET (−10% WHT)</div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Gross declared</span><span style="color:var(--text3)">${fmtK(thGross)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Withheld (10%)</span><span style="color:var(--amber)">−${fmtK(thGross-thNet)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px"><span>You receive</span><span style="color:var(--green)">${fmtK(thNet)}</span></div>
         </div>
         <div style="background:rgba(29,158,117,.06);border:0.5px solid rgba(29,158,117,.2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;font-weight:500;color:var(--green);margin-bottom:6px">🇸🇬 SGX Portfolio (0% tax-free)</div>
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:var(--text2)">Declared</span>
-            <span style="color:var(--text3)">${fmtK(sgNet)}</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px">
-            <span style="color:var(--text2)">Withheld</span>
-            <span style="color:var(--green)">S$0</span>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px">
-            <span>You receive</span>
-            <span style="color:var(--green)">${fmtK(sgNet)}</span>
-          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Declared</span><span style="color:var(--text3)">${fmtK(sgNet)}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span style="color:var(--text2)">Withheld</span><span style="color:var(--green)">S$0</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:600;border-top:0.5px solid var(--border);padding-top:6px;margin-top:4px"><span>You receive</span><span style="color:var(--green)">${fmtK(sgNet)}</span></div>
         </div>
       </div>
-
-      <!-- Progress bar — net income vs goal -->
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
-        <span>Net dividend income vs S$${GOAL_MONTHLY.toLocaleString()}/mo retirement goal</span>
+        <span>Net dividend income vs S$${GOAL_MONTHLY.toLocaleString()}/mo goal</span>
         <span style="font-weight:600;color:${goalPct>=100?'var(--green)':'var(--text)'}">${goalPct}%</span>
       </div>
       <div style="background:var(--bg2);border-radius:6px;height:10px;overflow:hidden;margin-bottom:5px">
         <div style="width:${Math.min(100,goalPct)}%;height:100%;border-radius:6px;background:${goalPct>=100?'var(--green)':'var(--blue)'};transition:width .5s"></div>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)">
-        <span>${fmtK(totalMonthly)}/mo net</span>
-        <span>${fmtK(GOAL_MONTHLY-totalMonthly)}/mo still needed from capital withdrawals</span>
-        <span>S$${GOAL_MONTHLY.toLocaleString()} goal</span>
+        <span>${fmtK(totalMonthly)}/mo net</span><span>${fmtK(GOAL_MONTHLY-totalMonthly)}/mo still needed</span><span>S$${GOAL_MONTHLY.toLocaleString()} goal</span>
       </div>
     </div>
-
-    <!-- Dividend table -->
-    <div class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px">
-        <div class="card-title" style="margin:0">Dividend-paying positions</div>
-        <span style="font-size:11px;color:var(--text3)">Yield % shown is net after withholding · Click Edit to override DPS</span>
-      </div>
-      <div style="overflow-x:auto">
-      <table class="stock-table">
-        <thead><tr>
-          ${divTh('ticker','Ticker','left')}
-          <th class="hide-mobile" style="cursor:pointer;user-select:none" onclick="sortDividends('name')" title="Sort by Company">
-            <span style="color:${_divSort.col==='name'?'var(--blue)':'var(--text3)'};font-weight:${_divSort.col==='name'?'600':'500'}">Company${_divSort.col==='name'?(_divSort.dir===1?' ↑':' ↓'):''}</span>
-          </th>
-          ${divTh('units','Units')}
-          ${divTh('dps','DPS')}
-          <th style="text-align:right;color:var(--text3);white-space:nowrap">Frequency</th>
-          ${divTh('yieldNet','Net yield')}
-          ${divTh('gross','Gross (SGD)')}
-          ${divTh('tax','Tax withheld')}
-          ${divTh('annualNet','Net (SGD)')}
-          ${divTh('monthlyNet','/mo net')}
-          <th></th>
-        </tr></thead>
-        <tbody>
-          ${sortedPaying.map(tableRow).join('')}
-          <tr style="border-top:1.5px solid var(--border)">
-            <td colspan="2" style="font-weight:600;font-size:13px;padding:8px">Total</td>
-            <td></td><td></td><td></td><td></td>
-            <td style="text-align:right;font-size:12px;color:var(--text3)">${fmtK(totalGross)}</td>
-            <td style="text-align:right;font-size:12px;color:var(--red)">−${fmtK(totalTaxDrag)}</td>
-            <td style="text-align:right;font-weight:700;font-size:14px;color:var(--green)">${fmtK(totalNet)}</td>
-            <td style="text-align:right;font-weight:600;font-size:13px;color:var(--green)">${fmtK(totalMonthly)}</td>
-            <td></td>
-          </tr>
-        </tbody>
-      </table>
-      </div>
-    </div>
-
-    <!-- Non-dividend stocks -->
+    <div class="section-hdr"><span class="section-dot" style="background:var(--red)"></span><span class="section-label">🇺🇸 US Portfolio <span style="font-weight:400;color:var(--text3)">· −30% withholding · ${usRows.length} positions</span></span></div>
+    <div class="card">${marketTable(usRows,'US','var(--blue)',usGross,usGross-usNet,usNet)}</div>
+    <div class="section-hdr"><span class="section-dot" style="background:var(--green)"></span><span class="section-label">🇸🇬 SGX Portfolio <span style="font-weight:400;color:var(--text3)">· 0% tax-free · ${sgRows.length} positions</span></span></div>
+    <div class="card">${marketTable(sgRows,'SG','var(--green)',sgNet,0,sgNet)}</div>
+    <div class="section-hdr"><span class="section-dot" style="background:#7F77DD"></span><span class="section-label">🇹🇭 SET Thailand <span style="font-weight:400;color:var(--text3)">· −10% withholding · ${thRows.length} positions</span></span></div>
+    <div class="card">${marketTable(thRows,'TH','#7F77DD',thGross,thGross-thNet,thNet)}</div>
     <div class="card">
       <div class="card-title">Non-dividend positions (${noPay.length})</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-        ${noPay.map(r=>`<span style="background:var(--bg2);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;font-family:monospace;color:var(--text2)">${r.st.ticker}</span>`).join('')}
-      </div>
-      <p style="font-size:12px;color:var(--text3);margin-top:8px">Growth positions — no dividend income. Returns come from capital appreciation.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${noPay.map(r=>`<span style="background:var(--bg2);border-radius:var(--radius-sm);padding:4px 10px;font-size:12px;font-family:monospace;color:var(--text2)">${r.st.ticker}</span>`).join('')}</div>
+      <p style="font-size:12px;color:var(--text3);margin-top:8px">Growth positions — no dividend income.</p>
     </div>
-
-    ${suspended.length>0?`
-    <div class="card" style="border-color:rgba(226,75,74,.3);background:rgba(226,75,74,.04)">
+    ${suspended.length>0?`<div class="card" style="border-color:rgba(226,75,74,.3);background:rgba(226,75,74,.04)">
       <div class="card-title" style="color:var(--red)">⚠ Suspended or distressed positions</div>
-      ${suspended.map(r=>{
-        const note=getDivInfo(r.st).note||'';
-        return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border)">
-          <span style="font-family:monospace;font-size:13px;font-weight:600;color:var(--red);min-width:60px">${r.st.ticker}</span>
-          <div>
-            <div style="font-size:13px;font-weight:500">${r.st.companyName}</div>
-            <div style="font-size:12px;color:var(--text2);margin-top:2px">${note}</div>
-          </div>
-        </div>`;
-      }).join('')}
+      ${suspended.map(r=>{const note=getDivInfo(r.st).note||'';return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border)"><span style="font-family:monospace;font-size:13px;font-weight:600;color:var(--red);min-width:60px">${r.st.ticker}</span><div><div style="font-size:13px;font-weight:500">${r.st.companyName}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${note}</div></div></div>`;}).join('')}
     </div>`:''}
-
-    <!-- Payout calendar -->
     <div class="card">
       <div class="card-title">Approximate payout schedule</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">
-        ${buildPayoutCalendar(paying)}
-      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">${buildPayoutCalendar(paying)}</div>
     </div>`;
 }
 
@@ -2070,8 +2135,7 @@ function openDivEdit(id){
   const st=stocks.find(x=>x.id===id); if(!st) return;
   _divEditId=id;
   const def=getDivInfo(st);
-  const cur=st.exchange==='US'?'US$':'S$';
-  // Build a small inline modal
+  const cur=st.exchange==='US'?'US$':st.exchange==='TH'?'฿':'S$';
   const existing=document.getElementById('div-edit-overlay');
   if(existing) existing.remove();
   const div=document.createElement('div');
@@ -2112,332 +2176,212 @@ function resetDivEdit(){
   saveAll(); render();
 }
 
-// ── Payout calendar ──────────────────────────────────────────────────
 function buildPayoutCalendar(paying){
   const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const FREQ_MONTHS = {
-    'quarterly':   [0,3,6,9],
-    'semi-annual': [2,8],
-    'monthly':     [0,1,2,3,4,5,6,7,8,9,10,11],
-    'annual':      [11],
-  };
-  // cal[month] = array of {ticker, exchange}
-  const cal = Array.from({length:12},()=>[]);
+  const FREQ_MONTHS={'quarterly':[0,3,6,9],'semi-annual':[2,8],'monthly':[0,1,2,3,4,5,6,7,8,9,10,11],'annual':[11]};
+  const cal=Array.from({length:12},()=>[]);
   paying.forEach(r=>{
-    const months = FREQ_MONTHS[r.freq] || [];
-    months.forEach(m=>cal[m].push({ticker:r.st.ticker, exchange:r.st.exchange}));
+    const months=FREQ_MONTHS[r.freq]||[];
+    months.forEach(m=>cal[m].push({ticker:r.st.ticker,exchange:r.st.exchange}));
   });
-
-  const legend = `<div style="grid-column:1/-1;display:flex;gap:12px;margin-bottom:4px;font-size:11px">
-    <span style="display:flex;align-items:center;gap:4px">
-      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(55,138,221,.18);border:0.5px solid rgba(55,138,221,.4)"></span>
-      <span style="color:var(--text2)">US stock</span>
-    </span>
-    <span style="display:flex;align-items:center;gap:4px">
-      <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(29,158,117,.18);border:0.5px solid rgba(29,158,117,.4)"></span>
-      <span style="color:var(--text2)">SGX stock</span>
-    </span>
+  const legend=`<div style="grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px;font-size:11px">
+    <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(55,138,221,.18);border:0.5px solid rgba(55,138,221,.4)"></span><span style="color:var(--text2)">US stock</span></span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(29,158,117,.18);border:0.5px solid rgba(29,158,117,.4)"></span><span style="color:var(--text2)">SGX stock</span></span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(127,119,221,.18);border:0.5px solid rgba(127,119,221,.4)"></span><span style="color:var(--text2)">SET Thailand stock</span></span>
   </div>`;
-
-  const cells = MONTHS.map((m,i)=>{
-    const chips = cal[i].length>0
-      ? cal[i].map(({ticker,exchange})=>{
-          const isUS = exchange==='US';
-          const bg   = isUS ? 'rgba(55,138,221,.15)'    : 'rgba(29,158,117,.15)';
-          const col  = isUS ? 'var(--blue)'              : 'var(--green)';
-          const bdr  = isUS ? 'rgba(55,138,221,.35)'    : 'rgba(29,158,117,.35)';
-          return `<span style="display:inline-block;font-size:10px;font-family:monospace;background:${bg};color:${col};border:0.5px solid ${bdr};border-radius:3px;padding:1px 5px;margin:1px">${ticker}</span>`;
-        }).join('')
-      : `<span style="font-size:10px;color:var(--text3)">—</span>`;
-    return `<div style="background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px">
-      <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:5px">${m}</div>
-      ${chips}
-    </div>`;
+  const cells=MONTHS.map((m,i)=>{
+    const chips=cal[i].length>0?cal[i].map(({ticker,exchange})=>{
+      const isUS=exchange==='US'; const isTH=exchange==='TH';
+      const bg=isUS?'rgba(55,138,221,.15)':isTH?'rgba(127,119,221,.15)':'rgba(29,158,117,.15)';
+      const col=isUS?'var(--blue)':isTH?'#7F77DD':'var(--green)';
+      const bdr=isUS?'rgba(55,138,221,.35)':isTH?'rgba(127,119,221,.40)':'rgba(29,158,117,.35)';
+      return `<span style="display:inline-block;font-size:10px;font-family:monospace;background:${bg};color:${col};border:0.5px solid ${bdr};border-radius:3px;padding:1px 5px;margin:1px">${ticker}</span>`;
+    }).join(''):`<span style="font-size:10px;color:var(--text3)">—</span>`;
+    return `<div style="background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px"><div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:5px">${m}</div>${chips}</div>`;
   }).join('');
-
-  return legend + cells;
+  return legend+cells;
 }
 
 // ════════════════════════════════════════════════════════════════════
 // INSIGHTS — Asset Allocation vs Target + Monthly Savings Tracker
 // ════════════════════════════════════════════════════════════════════
 
-// Stock categorisation — used for allocation analysis
 const STOCK_CATEGORY = {
-  // US Growth (no/minimal dividend — capital appreciation plays)
-  'AMZN':'US Growth', 'CPRT':'US Growth', 'FICO':'US Growth',
-  'MELI':'US Growth', 'META':'US Growth', 'NVDA':'US Growth',
-  'PANW':'US Growth', 'PLTR':'US Growth', 'MBGL':'US Growth',
-  // US Quality / Dividend
-  'AAPL':'US Quality', 'ASML':'US Quality', 'ELV':'US Quality',
-  'LVMUY':'US Quality', 'MA':'US Quality', 'MSFT':'US Quality',
-  'SPGI':'US Quality', 'TMO':'US Quality', 'UNH':'US Quality', 'ACN':'US Quality',
-  // US Income (high-yield)
+  'AMZN':'US Growth','CPRT':'US Growth','FICO':'US Growth',
+  'MELI':'US Growth','META':'US Growth','NVDA':'US Growth',
+  'PANW':'US Growth','PLTR':'US Growth','MBGL':'US Growth',
+  'AAPL':'US Quality','ASML':'US Quality','ELV':'US Quality',
+  'LVMUY':'US Quality','MA':'US Quality','MSFT':'US Quality',
+  'SPGI':'US Quality','TMO':'US Quality','UNH':'US Quality','ACN':'US Quality',
   'BXSL':'US Income',
-  // SGX REITs (tax-free income)
-  'A17U':'SG REIT', 'J69U':'SG REIT', 'M44U':'SG REIT',
-  'C38U':'SG REIT', 'SET EUR':'SG REIT',
-  // SGX suspended
+  'A17U':'SG REIT','J69U':'SG REIT','M44U':'SG REIT',
+  'C38U':'SG REIT','SET EUR':'SG REIT','N2IU':'SG REIT',
+  'PTTEP':'US Growth','PTT':'US Growth','SCB':'US Growth',
+  'BBL':'US Growth','ADVANC':'US Growth','KBANK':'US Growth',
   'BWCU':'Suspended',
-  // SGX Blue Chips (dividend, tax-free)
-  'O39':'SG Blue Chip', 'U11':'SG Blue Chip', 'D05':'SG Blue Chip',
+  'O39':'SG Blue Chip','U11':'SG Blue Chip','D05':'SG Blue Chip',
 };
 
-// Target allocation (% of investable assets = stocks + cash, ex-property, ex-CPF, ex-insurance)
+const STOCK_INDUSTRY = {
+  'MSFT':'Technology (Software)','AAPL':'Technology (Hardware)',
+  'NVDA':'Technology (Semiconductors)','ASML':'Technology (Semiconductors)',
+  'PANW':'Technology (Cybersecurity)','PLTR':'Technology (AI / Data)',
+  'FICO':'Technology (Analytics)','MBGL':'Technology (Auto Data)',
+  'ACN':'Technology (IT Services)','META':'Communication Services',
+  'UNH':'Healthcare (Managed Care)','ELV':'Healthcare (Managed Care)',
+  'TMO':'Healthcare (Life Sciences)',
+  'MA':'Financial Services (Payments)','SPGI':'Financial Services (Data / Ratings)',
+  'AMZN':'Consumer Disc. (E-Commerce)','MELI':'Consumer Disc. (E-Commerce)',
+  'LVMUY':'Consumer Disc. (Luxury)','CPRT':'Industrials (Auto Auction)',
+  'BXSL':'Credit / Lending',
+  'C38U':'Industrial REIT','M44U':'Logistics REIT','A17U':'Commercial REIT',
+  'J69U':'Retail REIT','N2IU':'Commercial REIT',
+  'O39':'Banking','U11':'Banking','SET EUR':'European REIT','BWCU':'Suspended (REIT)',
+  'PTTEP':'Energy (Oil & Gas)','PTT':'Energy (Oil & Gas)',
+  'SCB':'Banking (Thailand)','BBL':'Banking (Thailand)',
+  'ADVANC':'Telecom (Thailand)','KBANK':'Banking (Thailand)',
+};
+
+const INDUSTRY_BROAD = {
+  'Technology (Software)':'Technology','Technology (Hardware)':'Technology',
+  'Technology (Semiconductors)':'Technology','Technology (Cybersecurity)':'Technology',
+  'Technology (AI / Data)':'Technology','Technology (Analytics)':'Technology',
+  'Technology (Auto Data)':'Technology','Technology (IT Services)':'Technology',
+  'Communication Services':'Comm. Services',
+  'Healthcare (Managed Care)':'Healthcare','Healthcare (Life Sciences)':'Healthcare',
+  'Financial Services (Payments)':'Financial Services',
+  'Financial Services (Data / Ratings)':'Financial Services',
+  'Consumer Disc. (E-Commerce)':'Consumer Disc.','Consumer Disc. (Luxury)':'Consumer Disc.',
+  'Industrials (Auto Auction)':'Industrials','Credit / Lending':'Credit / Lending',
+  'Energy (Oil & Gas)':'Energy (TH)','Banking (Thailand)':'Banking (TH)',
+  'Telecom (Thailand)':'Telecom (TH)',
+};
+
 const ALLOC_TARGET = [
-  { key:'SG REIT',      label:'SG REITs',          target:28, color:'#1D9E75',
-    desc:'Tax-free income. Best fit for retirement cashflow.' },
-  { key:'SG Blue Chip', label:'SG Blue Chips',      target:12, color:'#2ECC71',
-    desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.' },
-  { key:'US Quality',   label:'US Quality/Dividend',target:30, color:'#378ADD',
-    desc:'Dividend payers. 30% WHT applies — strong compounders.' },
-  { key:'US Income',    label:'US High Yield',      target:5,  color:'#7F77DD',
-    desc:'BXSL-type — high income but watch credit risk.' },
-  { key:'US Growth',    label:'US Growth',          target:15, color:'#BA7517',
-    desc:'No dividend. Capital appreciation only. Reduce over time.' },
-  { key:'Cash',         label:'Cash / Emergency',   target:10, color:'#888780',
-    desc:'3–6 months expenses. Investable buffer.' },
-  { key:'Suspended',    label:'Suspended',          target:0,  color:'#E24B4A',
-    desc:'EC World REIT — trading & distribution halted.' },
+  {key:'SG REIT',label:'SG REITs',target:28,color:'#1D9E75',desc:'Tax-free income. Best fit for retirement cashflow.'},
+  {key:'SG Blue Chip',label:'SG Blue Chips',target:12,color:'#2ECC71',desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.'},
+  {key:'US Quality',label:'US Quality/Dividend',target:30,color:'#378ADD',desc:'Dividend payers. 30% WHT applies — strong compounders.'},
+  {key:'US Income',label:'Credit / Lending',target:5,color:'#7F77DD',desc:'BXSL — Business Development Company (BDC). High income, watch credit risk.'},
+  {key:'US Growth',label:'US Growth',target:15,color:'#BA7517',desc:'No dividend. Capital appreciation only. Reduce over time.'},
+  {key:'Cash',label:'Cash / Emergency',target:10,color:'#888780',desc:'3–6 months expenses. Investable buffer.'},
+  {key:'Suspended',label:'Suspended',target:0,color:'#E24B4A',desc:'EC World REIT — trading & distribution halted.'},
 ];
 
-// Asset rules:
-// • Property SG → illiquid, no income, not investable
-// • Property TH → rented (income to parents), no income to you, not investable
-// • CPF → locked, guaranteed 4%, not freely investable
-// • Insurance → locked, not investable
-// • Cash → investable
-// • Stocks → investable
-
 function buildInsightsData(){
-  const usd = usdSgdRate, thb = thbSgdRate, eur = eurSgdRate;
-
-  // ── Stock buckets ─────────────────────────────────────────────────
-  const stockBuckets = {};
-  ALLOC_TARGET.forEach(a=>{ stockBuckets[a.key]=0; });
-  let totalStocks = 0;
+  const usd=usdSgdRate,thb=thbSgdRate,eur=eurSgdRate;
+  const stockBuckets={};
+  ALLOC_TARGET.forEach(a=>{stockBuckets[a.key]=0;});
+  let totalStocks=0;
   stocks.forEach(st=>{
     if(!st.lastPrice) return;
-    const cat = STOCK_CATEGORY[st.ticker] || (st.exchange==='SG'?'SG Blue Chip':'US Quality');
-    let val = st.lastPrice * st.units;
-    if(st.currency==='USD'||st.exchange==='US') val *= usd;
-    else if(st.currency==='EUR') val *= eur;
-    stockBuckets[cat] = (stockBuckets[cat]||0) + val;
-    totalStocks += val;
+    const cat=STOCK_CATEGORY[st.ticker]||(st.exchange==='SG'?'SG Blue Chip':'US Quality');
+    let val=st.lastPrice*st.units;
+    if(st.currency==='USD'||st.exchange==='US') val*=usd;
+    else if(st.currency==='EUR') val*=eur;
+    else if(st.currency==='THB'||st.exchange==='TH') val*=thb;
+    stockBuckets[cat]=(stockBuckets[cat]||0)+val;
+    totalStocks+=val;
   });
-
-  // ── Other asset buckets ───────────────────────────────────────────
-  let cashTotal=0, propSG=0, propTH=0, cpfTotal=0, insurTotal=0, liabTotal=0;
+  let cashTotal=0,propSG=0,propTH=0,cpfTotal=0,insurTotal=0,liabTotal=0;
   assets.forEach(a=>{
-    const sgd = getAssetValueSGD(a);
-    if(a.isLiability){ liabTotal+=sgd; return; }
-    const cat = a.category;
-    const name = (a.name||'').toLowerCase();
+    const sgd=getAssetValueSGD(a);
+    if(a.isLiability){liabTotal+=sgd;return;}
+    const cat=a.category; const name=(a.name||'').toLowerCase();
     if(cat==='Cash') cashTotal+=sgd;
     else if(cat==='Property'){
-      // TH property: LPN, Klong — anything with THB or 'TH' in name
       if(a.origCurrency==='THB'||name.includes('lpn')||name.includes('klong')||name.includes(' th')) propTH+=sgd;
       else propSG+=sgd;
     }
     else if(cat==='CPF') cpfTotal+=sgd;
     else if(cat==='Insurance') insurTotal+=sgd;
   });
-
-  // ── Investable vs non-investable ──────────────────────────────────
-  const investable = totalStocks + cashTotal;
-  const nonInvestable = propSG + propTH + cpfTotal + insurTotal;
-  const totalAssets = investable + nonInvestable;
-  const nav = totalAssets - liabTotal;
-
-  // ── Current allocation vs target (% of investable) ───────────────
-  stockBuckets['Cash'] = cashTotal;
-  const allocRows = ALLOC_TARGET.map(t=>{
-    const current = (stockBuckets[t.key]||0);
-    const currentPct = investable>0 ? current/investable*100 : 0;
-    const diff = currentPct - t.target;
-    const gapSGD = (t.target/100 - currentPct/100) * investable; // SGD to buy/sell
-    return {...t, current, currentPct, diff, gapSGD};
+  const investable=totalStocks+cashTotal;
+  const nonInvestable=propSG+propTH+cpfTotal+insurTotal;
+  const totalAssets=investable+nonInvestable;
+  const nav=totalAssets-liabTotal;
+  stockBuckets['Cash']=cashTotal;
+  const allocRows=ALLOC_TARGET.map(t=>{
+    const current=(stockBuckets[t.key]||0);
+    const currentPct=investable>0?current/investable*100:0;
+    const diff=currentPct-t.target;
+    const gapSGD=(t.target/100-currentPct/100)*investable;
+    return {...t,current,currentPct,diff,gapSGD};
   });
-
-  // ── Monthly savings from snapshots ────────────────────────────────
-  const savingsData = [];
-  for(let i=1; i<snapshots.length; i++){
-    const prev=snapshots[i-1], curr=snapshots[i];
-    // Days between
+  const savingsData=[];
+  for(let i=1;i<snapshots.length;i++){
+    const prev=snapshots[i-1],curr=snapshots[i];
     const days=(new Date(curr.date)-new Date(prev.date))/(1000*60*60*24);
-    if(days<5||days>60) continue; // skip gaps that aren't roughly monthly
-    // Stock market movement estimate: use stock value change
+    if(days<5||days>60) continue;
     const stockDelta=(curr.stockValue||0)-(prev.stockValue||0);
-    // Total investable change
-    const invPrev=(prev.stockValue||0)+(prev.investable||0)-(prev.stockValue||0);
-    const invCurr=(curr.stockValue||0)+(curr.investable||0)-(curr.stockValue||0);
-    // Net worth change
     const navDelta=curr.nav-prev.nav;
-    // Net new savings = nav change minus estimated market gain
-    // Market gain ≈ stock value change (imperfect but reasonable)
     const mktGain=stockDelta;
     const netSaved=navDelta-mktGain;
-    savingsData.push({
-      date:curr.date, label:curr.date.slice(0,7),
-      navDelta, mktGain, netSaved, days
-    });
+    savingsData.push({date:curr.date,label:curr.date.slice(0,7),navDelta,mktGain,netSaved,days});
   }
-
-  return { stockBuckets, cashTotal, propSG, propTH, cpfTotal, insurTotal,
-           liabTotal, investable, nonInvestable, totalAssets, nav,
-           totalStocks, allocRows, savingsData };
+  return {stockBuckets,cashTotal,propSG,propTH,cpfTotal,insurTotal,liabTotal,investable,nonInvestable,totalAssets,nav,totalStocks,allocRows,savingsData};
 }
 
 function renderInsights(){
-  const d = buildInsightsData();
-  const { investable, nonInvestable, totalAssets, nav, liabTotal,
-          totalStocks, cashTotal, propSG, propTH, cpfTotal, insurTotal,
-          allocRows, savingsData } = d;
-
-  // ── 1. Asset Map ──────────────────────────────────────────────────
-  function assetBox(label, value, sub, color, badge, investableFlag){
-    const investBadge = investableFlag
-      ? `<span style="font-size:9px;background:rgba(29,158,117,.15);color:var(--green);border:0.5px solid rgba(29,158,117,.3);border-radius:3px;padding:1px 5px;margin-left:5px">Investable</span>`
-      : `<span style="font-size:9px;background:var(--bg2);color:var(--text3);border:0.5px solid var(--border);border-radius:3px;padding:1px 5px;margin-left:5px">Locked</span>`;
-    return `<div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;position:relative;border-left:3px solid ${color}">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px">
-        <span style="font-size:12px;font-weight:500;color:var(--text)">${label}${investBadge}</span>
-        <span style="font-size:14px;font-weight:700;color:var(--text)">${fmtK(value)}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">
-        ${badge?`<span style="font-size:10px;background:${color}22;color:${color};border-radius:3px;padding:1px 6px;font-weight:500">${badge}</span>`:''}
-        <span style="font-size:11px;color:var(--text3)">${sub}</span>
-      </div>
+  const d=buildInsightsData();
+  const {investable,nonInvestable,totalAssets,nav,liabTotal,totalStocks,cashTotal,propSG,propTH,cpfTotal,insurTotal,allocRows,savingsData}=d;
+  function assetBox(label,value,sub,color,badge,inv){
+    const invBadge=inv?`<span style="font-size:9px;background:rgba(29,158,117,.15);color:var(--green);border:0.5px solid rgba(29,158,117,.3);border-radius:3px;padding:1px 5px;margin-left:5px">Investable</span>`:`<span style="font-size:9px;background:var(--bg2);color:var(--text3);border:0.5px solid var(--border);border-radius:3px;padding:1px 5px;margin-left:5px">Locked</span>`;
+    return `<div style="background:var(--bg);border:0.5px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;border-left:3px solid ${color}">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:4px"><span style="font-size:12px;font-weight:500">${label}${invBadge}</span><span style="font-size:14px;font-weight:700">${fmtK(value)}</span></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:3px"><span style="font-size:10px;background:${color}22;color:${color};border-radius:3px;padding:1px 6px;font-weight:500;margin-right:5px">${badge}</span>${sub}</div>
     </div>`;
   }
-
-  // ── 2. Allocation bars ────────────────────────────────────────────
   function allocBar(row){
-    const cur = Math.max(0, row.currentPct);
-    const tgt = row.target;
-    const over = cur > tgt+2;
-    const under = cur < tgt-2;
-    const status = over ? '▲ Overweight' : under ? '▼ Underweight' : '✓ On target';
-    const statusCol = over ? 'var(--amber)' : under ? 'var(--blue)' : 'var(--green)';
-    const gapText = Math.abs(row.gapSGD)>1000
-      ? (row.gapSGD>0?'Buy ':'Sell ')+fmtK(Math.abs(row.gapSGD))
-      : 'On target';
-
-    return `<div style="margin-bottom:12px">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:4px">
-        <div style="display:flex;align-items:center;gap:7px">
-          <span style="width:10px;height:10px;border-radius:50%;background:${row.color};flex-shrink:0;display:inline-block"></span>
-          <span style="font-size:13px;font-weight:500;color:var(--text)">${row.label}</span>
-          ${row.key==='Suspended'?`<span style="font-size:10px;background:#FCEBEB;color:var(--red);border-radius:3px;padding:1px 5px">Suspended</span>`:''}
-        </div>
-        <span style="font-size:11px;color:${statusCol};font-weight:500">${status} · ${gapText}</span>
-      </div>
-      <div style="font-size:11px;color:var(--text3);margin-bottom:5px;padding-left:17px">${row.desc}</div>
-      <!-- Current bar -->
-      <div style="padding-left:17px">
-        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
-          <span style="font-size:11px;color:var(--text2);width:52px;flex-shrink:0">Current</span>
-          <div style="flex:1;background:var(--bg2);border-radius:4px;height:8px;overflow:hidden">
-            <div style="width:${Math.min(100,cur/Math.max(tgt,cur)*100).toFixed(1)}%;height:100%;border-radius:4px;background:${row.color};transition:width .5s"></div>
-          </div>
-          <span style="font-size:12px;font-weight:600;color:var(--text);width:36px;text-align:right">${cur.toFixed(1)}%</span>
-        </div>
-        <!-- Target bar -->
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:11px;color:var(--text3);width:52px;flex-shrink:0">Target</span>
-          <div style="flex:1;background:var(--bg2);border-radius:4px;height:8px;overflow:hidden">
-            <div style="width:${Math.min(100,tgt/Math.max(tgt,cur)*100).toFixed(1)}%;height:100%;border-radius:4px;background:${row.color};opacity:0.35;border:1.5px dashed ${row.color};box-sizing:border-box"></div>
-          </div>
-          <span style="font-size:12px;color:var(--text3);width:36px;text-align:right">${tgt}%</span>
-        </div>
-      </div>
+    const cur=Math.max(0,row.currentPct),tgt=row.target;
+    const over=cur>tgt+2,under=cur<tgt-2;
+    const status=over?'▲ Overweight':under?'▼ Underweight':'✓ On target';
+    const statusCol=over?'var(--amber)':under?'var(--blue)':'var(--green)';
+    const gapText=Math.abs(row.gapSGD)>1000?(row.gapSGD>0?'Buy ':'Sell ')+fmtK(Math.abs(row.gapSGD)):'On target';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:0.5px solid var(--border);flex-wrap:wrap">
+      <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${row.color};flex-shrink:0"></span>
+      <span style="font-size:13px;font-weight:500;min-width:120px">${row.label}${row.key==='Suspended'?` <span style="font-size:10px;background:#FCEBEB;color:var(--red);border-radius:3px;padding:1px 5px">Suspended</span>`:''}</span>
+      <span style="font-size:11px;color:var(--text3);flex:1">${row.desc}</span>
+      <span style="font-size:11px;color:${statusCol};font-weight:500;white-space:nowrap">${status} · ${gapText}</span>
     </div>`;
   }
-
-  // ── 3. Monthly savings chart (SVG bar chart) ─────────────────────
   function savingsChart(){
-    if(savingsData.length<1) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">
-      Need at least 2 snapshots to track savings. Record a snapshot each month to build this chart.</p>`;
-
-    const W=560, H=160, PL=60, PR=20, PT=10, PB=32;
-    const gW=W-PL-PR, gH=H-PT-PB;
-    const maxVal = Math.max(...savingsData.map(s=>Math.max(Math.abs(s.netSaved),Math.abs(s.mktGain),1)));
-    const barW = Math.min(40, (gW/savingsData.length)*0.5);
-    const spacing = gW/savingsData.length;
-    const midY = PT+gH/2; // zero line
-
-    const toY = v => midY - (v/maxVal)*(gH/2);
-
-    let bars='', labels='', ticks='';
+    if(savingsData.length<1) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">Need at least 2 snapshots to track savings. Record a snapshot each month to build this chart.</p>`;
+    const W=560,H=160,PL=60,PR=20,PT=10,PB=32,gW=W-PL-PR,gH=H-PT-PB;
+    const maxVal=Math.max(...savingsData.map(s=>Math.max(Math.abs(s.netSaved),Math.abs(s.mktGain),1)));
+    const spacing=gW/savingsData.length,barW=Math.min(40,spacing*0.5),midY=PT+gH/2;
+    const toY=v=>midY-(v/maxVal)*(gH/2);
+    let bars='',labels='',ticks='';
     savingsData.forEach((s,i)=>{
-      const cx = PL + i*spacing + spacing/2;
-      // Market gain bar (blue, behind)
-      const mktY=toY(s.mktGain); const mktH=Math.abs(mktY-midY);
+      const cx=PL+i*spacing+spacing/2;
+      const mktY=toY(s.mktGain),mktH=Math.abs(mktY-midY);
       bars+=`<rect x="${(cx-barW/2-2).toFixed(1)}" y="${Math.min(mktY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${mktH.toFixed(1)}" fill="var(--blue)" opacity="0.4" rx="2"/>`;
-      // Net saved bar (green/red)
-      const netY=toY(s.netSaved); const netH=Math.abs(netY-midY);
-      const netCol=s.netSaved>=0?'var(--green)':'var(--red)';
-      bars+=`<rect x="${(cx).toFixed(1)}" y="${Math.min(netY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${netH.toFixed(1)}" fill="${netCol}" opacity="0.85" rx="2"/>`;
-      // Label
+      const netY=toY(s.netSaved),netH=Math.abs(netY-midY);
+      bars+=`<rect x="${cx.toFixed(1)}" y="${Math.min(netY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${netH.toFixed(1)}" fill="${s.netSaved>=0?'var(--green)':'var(--red)'}" opacity="0.85" rx="2"/>`;
       labels+=`<text x="${cx.toFixed(1)}" y="${H-4}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.label}</text>`;
     });
-
-    // Y-axis ticks
-    [-maxVal,0,maxVal].forEach(v=>{
-      const y=toY(v).toFixed(1);
-      ticks+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="${v===0?1:0.5}"/>`;
-      ticks+=`<text x="${PL-4}" y="${(parseFloat(y)+3).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;
-    });
-
-    const avg = savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length;
-
-    return `
-    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
+    [-maxVal,0,maxVal].forEach(v=>{const y=toY(v).toFixed(1);ticks+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="${v===0?1:0.5}"/><text x="${PL-4}" y="${(parseFloat(y)+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;});
+    const avg=savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length;
+    return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
       <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--green);display:inline-block"></span>Net new savings</span>
       <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--blue);opacity:.5;display:inline-block"></span>Market gain/loss</span>
       <span style="margin-left:auto;color:var(--text2)">Avg net savings: <strong style="color:${avg>=0?'var(--green)':'var(--red)'}">${fmtK(avg)}/period</strong></span>
     </div>
-    <div style="overflow-x:auto">
-    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
-      ${ticks}
-      ${bars}
-      ${labels}
-    </svg></div>`;
+    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${ticks}${bars}${labels}</svg></div>`;
   }
-
-  // ── Savings target from goal planner ─────────────────────────────
-  const t2 = computeTotals();
-  const msSaved = computeMonthlySavingsNeeded(t2.nav);
-
+  const t2=computeTotals(),msSaved=computeMonthlySavingsNeeded(t2.nav);
   document.getElementById('view-insights').innerHTML=`
-
-  <!-- ══ SECTION 1: ASSET MAP ══ -->
   <div class="card">
-    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
-      <div class="card-title" style="margin:0">Asset map</div>
-      <span style="font-size:11px;color:var(--text3)">Investable = assets you can deploy or rebalance</span>
-    </div>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Asset map</div><span style="font-size:11px;color:var(--text3)">Investable = assets you can deploy or rebalance</span></div>
     <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Your total wealth of <strong>${fmtK(totalAssets)}</strong> breaks into two buckets. Only the investable portion (<strong>${fmtK(investable)}</strong>) can be actively managed toward your retirement goal.</p>
-
-    <!-- Investable vs locked bar -->
     <div style="margin-bottom:14px">
       <div style="display:flex;border-radius:8px;overflow:hidden;height:18px;margin-bottom:6px">
-        <div style="width:${(investable/totalAssets*100).toFixed(1)}%;background:var(--green);display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:white;font-weight:600;white-space:nowrap;padding:0 4px">${(investable/totalAssets*100).toFixed(0)}% Investable</span>
-        </div>
-        <div style="flex:1;background:var(--bg3);display:flex;align-items:center;justify-content:center">
-          <span style="font-size:10px;color:var(--text2);font-weight:500;white-space:nowrap;padding:0 4px">${(nonInvestable/totalAssets*100).toFixed(0)}% Locked</span>
-        </div>
+        <div style="width:${(investable/totalAssets*100).toFixed(1)}%;background:var(--green);display:flex;align-items:center;justify-content:center"><span style="font-size:10px;color:white;font-weight:600;white-space:nowrap;padding:0 4px">${(investable/totalAssets*100).toFixed(0)}% Investable</span></div>
+        <div style="flex:1;background:var(--bg3);display:flex;align-items:center;justify-content:center"><span style="font-size:10px;color:var(--text2);font-weight:500;white-space:nowrap;padding:0 4px">${(nonInvestable/totalAssets*100).toFixed(0)}% Locked</span></div>
       </div>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)">
-        <span>Stocks ${fmtK(totalStocks)} + Cash ${fmtK(cashTotal)}</span>
-        <span>Property ${fmtK(propSG+propTH)} + CPF ${fmtK(cpfTotal)} + Insurance ${fmtK(insurTotal)}</span>
-      </div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3)"><span>Stocks ${fmtK(totalStocks)} + Cash ${fmtK(cashTotal)}</span><span>Property ${fmtK(propSG+propTH)} + CPF ${fmtK(cpfTotal)} + Insurance ${fmtK(insurTotal)}</span></div>
     </div>
-
-    <!-- Asset grid -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-bottom:10px">
-      ${assetBox('Stock Portfolio',totalStocks,'US + SGX holdings','var(--blue)','Investable',true)}
+      ${assetBox('Stock Portfolio',totalStocks,'US + SGX + TH holdings','var(--blue)','Investable',true)}
       ${assetBox('Cash (SGD + THB + USD)',cashTotal,'Across all bank accounts + IB','var(--green)','Investable',true)}
       ${assetBox('CPF (OA + SA)',cpfTotal,'Locked until 55–65 · earns 2.5–4%','var(--purple)','Locked',false)}
       ${assetBox('Property SG (Citylights)',propSG,'No rental income · illiquid','var(--amber)','No income',false)}
@@ -2448,138 +2392,369 @@ function renderInsights(){
       <strong style="color:var(--red)">Liabilities: ${fmtK(liabTotal)}</strong> · Mortgage + credit card · Net worth after liabilities: <strong style="color:var(--text)">${fmtK(nav)}</strong>
     </div>
   </div>
-
-  <!-- ══ SECTION 2: ALLOCATION vs TARGET ══ -->
   <div class="card">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
       <div class="card-title" style="margin:0">Allocation vs target <span style="font-size:10px;font-weight:400;color:var(--text3)">(% of investable assets)</span></div>
-      <span style="font-size:11px;color:var(--text3)">Based on S$${Math.round(investable/1000)}K investable</span>
+      <span style="font-size:11px;color:var(--text3)">Based on S$${Math.round(investable/1000)}K investable · click a row to see positions</span>
     </div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.6">Target is calibrated for your retirement income goal — maximising <strong>tax-free SGX income</strong> while keeping quality US compounders. Reduce US Growth over time; build SG REITs + Blue Chips.</p>
-    ${allocRows.map(allocBar).join('')}
-
-    <!-- Rebalancing summary table -->
-    <div style="border-top:0.5px solid var(--border);padding-top:12px;margin-top:4px">
-      <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px">Rebalancing actions needed</div>
-      <div style="overflow-x:auto">
-      <table class="stock-table">
-        <thead><tr>
-          <th>Category</th>
-          <th style="text-align:right">Current</th>
-          <th style="text-align:right">Target</th>
-          <th style="text-align:right">Gap (SGD)</th>
-          <th style="text-align:right">Action</th>
-        </tr></thead>
-        <tbody>
-          ${allocRows.filter(r=>Math.abs(r.diff)>1).sort((a,b)=>a.diff-b.diff).map(r=>{
-            const over=r.diff>0;
-            return `<tr>
-              <td style="font-size:13px">
-                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};margin-right:6px"></span>
-                ${r.label}
-              </td>
-              <td style="text-align:right;font-size:12px">${r.currentPct.toFixed(1)}%</td>
-              <td style="text-align:right;font-size:12px;color:var(--text3)">${r.target}%</td>
-              <td style="text-align:right;font-size:12px;color:${over?'var(--amber)':'var(--blue)'}">${over?'+':''} ${fmtK(Math.abs(r.gapSGD))}</td>
-              <td style="text-align:right">
-                <span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;background:${over?'rgba(186,117,23,.12)':'rgba(55,138,221,.12)'};color:${over?'var(--amber)':'var(--blue)'}">${over?'Trim / hold':'Buy more'}</span>
-              </td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
-      </div>
-    </div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Target calibrated for retirement income goal — maximise tax-free SGX income while keeping quality US compounders. Reduce US Growth over time; build SG REITs + Blue Chips.</p>
+    <div style="overflow-x:auto"><table class="stock-table" id="rebalTable">
+      <thead><tr>
+        <th>Category</th>
+        <th class="hide-mobile">Description</th>
+        <th style="text-align:right">Current</th>
+        <th style="text-align:right">Target</th>
+        <th style="text-align:right">Gap (SGD)</th>
+        <th style="text-align:right">Action</th>
+      </tr></thead>
+      <tbody>${allocRows.filter(r=>Math.abs(r.diff)>1).sort((a,b)=>a.diff-b.diff).map(r=>{
+        const over=r.diff>0;
+        return `<tr style="cursor:pointer" onclick="toggleRebalDetail('${r.key}','${r.color}')" title="Click to see positions in this category">
+          <td style="white-space:nowrap">
+            <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${r.color};margin-right:7px"></span>
+            <strong style="font-size:13px">${r.label}</strong>
+          </td>
+          <td class="hide-mobile" style="font-size:11px;color:var(--text3)">${r.desc}</td>
+          <td style="text-align:right;font-size:12px">${r.currentPct.toFixed(1)}%</td>
+          <td style="text-align:right;font-size:12px;color:var(--text3)">${r.target}%</td>
+          <td style="text-align:right;font-size:12px;color:${over?'var(--amber)':'var(--blue)'}">${over?'+':''}${fmtK(Math.abs(r.gapSGD))}</td>
+          <td style="text-align:right"><span style="font-size:11px;font-weight:500;padding:2px 8px;border-radius:10px;background:${over?'rgba(186,117,23,.12)':'rgba(55,138,221,.12)'};color:${over?'var(--amber)':'var(--blue)'}">${over?'Trim / hold':'Buy more'}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>
+    <!-- Expandable positions panel -->
+    <div id="rebal-detail" style="display:none;margin-top:10px;border-top:0.5px solid var(--border);padding-top:10px"></div>
   </div>
-
-  <!-- ══ SECTION 3: MONTHLY SAVINGS TRACKER ══ -->
   <div class="card">
-    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px">
-      <div class="card-title" style="margin:0">Monthly savings tracker</div>
-      <span style="font-size:11px;color:var(--text3)">Derived from snapshot comparisons</span>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Industry exposure</div><span style="font-size:11px;color:var(--text3)">Based on current stock prices · SGD equivalent</span></div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.6">How your stock portfolio is distributed across industries.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px">
+      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇺🇸 US portfolio by industry</div><div style="position:relative;height:180px"><canvas id="insUsChart" role="img" aria-label="US portfolio industry breakdown">US industry breakdown.</canvas></div><div style="margin-top:10px" id="insUsLegend"></div></div>
+      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇸🇬 SGX portfolio by sector</div><div style="position:relative;height:180px"><canvas id="insSgChart" role="img" aria-label="SGX portfolio sector breakdown">SGX sector breakdown.</canvas></div><div style="margin-top:10px" id="insSgLegend"></div></div>
+      <div><div style="font-size:12px;font-weight:500;margin-bottom:8px">🇹🇭 SET Thailand by sector</div><div style="position:relative;height:180px"><canvas id="insThChart" role="img" aria-label="SET Thailand sector breakdown">TH sector breakdown.</canvas></div><div style="margin-top:10px" id="insThLegend"></div></div>
     </div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Each bar compares two snapshots. <span style="color:var(--green);font-weight:500">Green = net new money saved</span> (nav change minus estimated market movement). <span style="color:var(--blue);font-weight:500">Blue = market gains/losses</span> on existing holdings. Record a snapshot monthly for best results.</p>
-
-    <!-- Target savings metric -->
+    <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between">
+      <span>Stock detail — by industry</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="insExpandAll(true)" style="font-size:10px;padding:2px 8px">Expand all</button>
+        <button class="btn btn-sm" onclick="insExpandAll(false)" style="font-size:10px;padding:2px 8px">Collapse all</button>
+      </div>
+    </div>
+    <div id="insStockTable"></div>
+  </div>
+  <div class="card">
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Monthly savings tracker</div><span style="font-size:11px;color:var(--text3)">Derived from snapshot comparisons</span></div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Green = net new money saved. Blue = market gains/losses. Record a snapshot monthly.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px">
-      <div class="metric">
-        <div class="metric-label">Monthly savings needed</div>
-        <div class="metric-value" style="color:var(--amber)">${fmtK(msSaved)}</div>
-        <div class="metric-sub">to reach ${fmtK(computeGoal().nestEgg)} by ${computeGoal().retireYear}</div>
-      </div>
-      ${savingsData.length>0?`
-      <div class="metric">
-        <div class="metric-label">Average net saved</div>
-        <div class="metric-value" style="color:var(--green)">${fmtK(savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length)}</div>
-        <div class="metric-sub">per snapshot period</div>
-      </div>
-      <div class="metric">
-        <div class="metric-label">Total market gain</div>
-        <div class="metric-value" style="color:var(--blue)">${fmtK(savingsData.reduce((s,r)=>s+r.mktGain,0))}</div>
-        <div class="metric-sub">across all periods</div>
-      </div>`:''}
+      <div class="metric"><div class="metric-label">Monthly savings needed</div><div class="metric-value" style="color:var(--amber)">${fmtK(msSaved)}</div><div class="metric-sub">to reach ${fmtK(computeGoal().nestEgg)} by ${computeGoal().retireYear}</div></div>
+      ${savingsData.length>0?`<div class="metric"><div class="metric-label">Average net saved</div><div class="metric-value" style="color:var(--green)">${fmtK(savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length)}</div><div class="metric-sub">per snapshot period</div></div>
+      <div class="metric"><div class="metric-label">Total market gain</div><div class="metric-value" style="color:var(--blue)">${fmtK(savingsData.reduce((s,r)=>s+r.mktGain,0))}</div><div class="metric-sub">across all periods</div></div>`:''}
     </div>
-
     ${savingsChart()}
-
     <div style="background:rgba(55,138,221,.06);border:0.5px solid rgba(55,138,221,.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;color:var(--text2);margin-top:12px;line-height:1.6">
-      💡 <strong>How to use this:</strong> Record a snapshot at the same time each month — ideally after salary credit and before major spending. The green bar tells you how much new wealth you created that month beyond market movements.
+      💡 <strong>How to use this:</strong> Record a snapshot at the same time each month — ideally after salary credit. The green bar tells you how much new wealth you created beyond market movements.
     </div>
   </div>`;
-}
-loadAll();
-render();
-updateBackupBanner();
-// Auto-fetch on first load if prices are missing (forceAll=false — only fetch missing)
-if(stocks.some(s=>!s.lastPrice)){
-  setTimeout(()=>refreshAllPrices(false), 800);
+  setTimeout(renderIndustryCharts, 50);
 }
 
-// Register service worker for offline support and PWA install
-if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js').then(reg => {
-    // Check for updates every time the page loads
-    reg.update();
-    // When a new service worker is waiting, show update banner
-    reg.addEventListener('updatefound', () => {
-      const newSW = reg.installing;
-      newSW.addEventListener('statechange', () => {
-        if(newSW.state === 'installed' && navigator.serviceWorker.controller){
-          showUpdateBanner();
-        }
-      });
+function renderIndustryCharts(){
+  // Load Chart.js dynamically if not already present
+  if(typeof Chart === 'undefined'){
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
+    script.onload = () => _buildIndustryCharts();
+    script.onerror = () => console.warn('Chart.js failed to load');
+    document.head.appendChild(script);
+  } else {
+    _buildIndustryCharts();
+  }
+}
+
+function _buildIndustryCharts(){
+  // ── Consistent color palette — index-based per entry so chart and table always match ──
+  const PIE_COLORS=['#2a78d6','#1baf7a','#eda100','#4a3aa7','#e34948','#008300','#e87ba4','#eb6834','#888780','#5bc4c0','#d4a017','#7a9e3c'];
+
+  // Build buckets from live stock data
+  const usMap={}, sgMap={}, thMap={};
+  let usTotal=0, sgTotal=0, thTotal=0;
+  stocks.forEach(st=>{
+    if(!st.lastPrice) return;
+    let v=st.lastPrice*st.units;
+    if(st.currency==='USD'||st.exchange==='US') v*=usdSgdRate;
+    else if(st.currency==='EUR') v*=eurSgdRate;
+    else if(st.currency==='THB'||st.exchange==='TH') v*=thbSgdRate;
+    const ind=STOCK_INDUSTRY[st.ticker]; if(!ind) return;
+    if(st.exchange==='US'){const b=INDUSTRY_BROAD[ind]||ind;usMap[b]=(usMap[b]||0)+v;usTotal+=v;}
+    else if(st.exchange==='SG'){sgMap[ind]=(sgMap[ind]||0)+v;sgTotal+=v;}
+    else if(st.exchange==='TH'){const b=INDUSTRY_BROAD[ind]||ind;thMap[b]=(thMap[b]||0)+v;thTotal+=v;}
+  });
+
+  const usEntries=Object.entries(usMap).sort((a,b)=>b[1]-a[1]);
+  const sgEntries=Object.entries(sgMap).sort((a,b)=>b[1]-a[1]);
+  const thEntries=Object.entries(thMap).sort((a,b)=>b[1]-a[1]);
+
+  // Build color maps — keyed by label so chart slice = table row = same color
+  function buildColorMap(entries){ const m={}; entries.forEach(([k],i)=>m[k]=PIE_COLORS[i%PIE_COLORS.length]); return m; }
+  const usColorMap=buildColorMap(usEntries);
+  const sgColorMap=buildColorMap(sgEntries);
+  const thColorMap=buildColorMap(thEntries);
+
+  function makePie(id,entries,total,colorMap){
+    const el=document.getElementById(id); if(!el||!entries.length) return;
+    const existing=Chart.getChart?Chart.getChart(el):null;
+    if(existing) existing.destroy();
+    new Chart(el,{type:'pie',data:{labels:entries.map(([k])=>k),datasets:[{
+      data:entries.map(([,v])=>Math.round(v)),
+      backgroundColor:entries.map(([k])=>colorMap[k]),
+      borderWidth:2,borderColor:'transparent',hoverOffset:6
+    }]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},
+      tooltip:{callbacks:{label:ctx=>' '+fmtK(ctx.parsed)+'  ('+(ctx.parsed/total*100).toFixed(1)+'%)'}}}}});
+  }
+
+  function makeLegend(id,entries,total,colorMap){
+    const el=document.getElementById(id); if(!el) return;
+    el.innerHTML='';
+    if(!entries.length){el.innerHTML='<p style="font-size:11px;color:var(--text3)">No positions yet.</p>';return;}
+    entries.forEach(([lbl,val])=>{
+      const col=colorMap[lbl];
+      el.innerHTML+=`<div style="display:flex;align-items:flex-start;gap:6px;margin-bottom:4px;font-size:11px">
+        <span style="width:9px;height:9px;border-radius:2px;background:${col};flex-shrink:0;margin-top:2px;display:inline-block"></span>
+        <span style="color:var(--text2);flex:1">${lbl}</span>
+        <span style="color:var(--text);font-weight:500;white-space:nowrap">${fmtK(val)}<span style="color:var(--text3);margin-left:3px">${(val/total*100).toFixed(1)}%</span></span>
+      </div>`;
     });
-  }).catch(()=>{});
-  // If controller changes (new SW activated), reload to get fresh app
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    window.location.reload();
+  }
+
+  makePie('insUsChart',usEntries,usTotal,usColorMap);
+  makePie('insSgChart',sgEntries,sgTotal,sgColorMap);
+  makePie('insThChart',thEntries,thTotal,thColorMap);
+  makeLegend('insUsLegend',usEntries,usTotal,usColorMap);
+  makeLegend('insSgLegend',sgEntries,sgTotal,sgColorMap);
+  makeLegend('insThLegend',thEntries,thTotal,thColorMap);
+
+  // ── Collapsible grouped stock detail table ──────────────────────────
+  const container=document.getElementById('insStockTable'); if(!container) return;
+  container.innerHTML='';
+  const allTotal=usTotal+sgTotal+thTotal;
+
+  // Collect stocks per market → broad industry → individual
+  function collectMarket(exchange, colorMap){
+    const grouped={};
+    stocks.forEach(st=>{
+      if(st.exchange!==exchange||!st.lastPrice) return;
+      const ind=STOCK_INDUSTRY[st.ticker]; if(!ind) return;
+      const broad=(exchange==='US'||exchange==='TH')?(INDUSTRY_BROAD[ind]||ind):ind;
+      if(!grouped[broad]) grouped[broad]=[];
+      let v=st.lastPrice*st.units;
+      if(st.currency==='USD'||exchange==='US') v*=usdSgdRate;
+      else if(st.currency==='EUR') v*=eurSgdRate;
+      else if(st.currency==='THB'||exchange==='TH') v*=thbSgdRate;
+      grouped[broad].push({...st,valSGD:v,fullInd:ind,col:colorMap[broad]||'#888'});
+    });
+    // Sort groups by total value
+    return Object.entries(grouped)
+      .map(([grp,stList])=>({grp,stList:stList.sort((a,b)=>b.valSGD-a.valSGD),grpTot:stList.reduce((s,x)=>s+x.valSGD,0),col:colorMap[grp]||'#888'}))
+      .sort((a,b)=>b.grpTot-a.grpTot);
+  }
+
+  const markets=[
+    {exchange:'US',flag:'🇺🇸',label:'US Portfolio',colorMap:usColorMap,total:usTotal},
+    {exchange:'SG',flag:'🇸🇬',label:'SGX Portfolio',colorMap:sgColorMap,total:sgTotal},
+    {exchange:'TH',flag:'🇹🇭',label:'SET Thailand',colorMap:thColorMap,total:thTotal},
+  ];
+
+  markets.forEach(({exchange,flag,label,colorMap,total})=>{
+    const groups=collectMarket(exchange,colorMap);
+    if(!groups.length) return;
+    const mktId=`ins-mkt-${exchange}`;
+    const mktTotal=groups.reduce((s,g)=>s+g.grpTot,0);
+
+    // Market header (always visible, click to collapse all industries within)
+    const mktDiv=document.createElement('div');
+    mktDiv.style.cssText='margin-bottom:8px;border:0.5px solid var(--border);border-radius:var(--radius);overflow:hidden';
+    mktDiv.innerHTML=`
+      <div onclick="insToggleMkt('${mktId}')" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--bg2)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="${mktId}-icon" style="font-size:12px;transition:transform .2s">▼</span>
+          <span style="font-size:13px;font-weight:600">${flag} ${label}</span>
+          <span style="font-size:11px;color:var(--text3)">${groups.length} sectors · ${fmtK(mktTotal)} · ${(mktTotal/allTotal*100).toFixed(1)}% of portfolio</span>
+        </div>
+      </div>
+      <div id="${mktId}-body" style="padding:0 4px 4px"></div>`;
+    container.appendChild(mktDiv);
+
+    const mktBody=mktDiv.querySelector(`#${mktId}-body`);
+
+    groups.forEach(({grp,stList,grpTot,col})=>{
+      const grpId=`ins-grp-${exchange}-${grp.replace(/[^a-z0-9]/gi,'')}`;
+      const grpDiv=document.createElement('div');
+      grpDiv.style.cssText='margin:4px;border-radius:6px;overflow:hidden;border:0.5px solid var(--border)';
+      grpDiv.innerHTML=`
+        <div onclick="insToggleGrp('${grpId}')" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;padding:7px 12px;background:var(--bg)">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span id="${grpId}-icon" style="font-size:11px;color:var(--text3);transition:transform .2s">▶</span>
+            <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${col};flex-shrink:0"></span>
+            <span style="font-size:12px;font-weight:500;color:${col}">${grp}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:12px;font-weight:600;color:${col}">${fmtK(grpTot)}</span>
+            <span style="font-size:11px;color:var(--text3)">${(grpTot/allTotal*100).toFixed(1)}%</span>
+          </div>
+        </div>
+        <div id="${grpId}-body" style="display:none;overflow-x:auto">
+          <table class="stock-table" style="margin:0">
+            <thead><tr>
+              <th style="padding-left:20px">Ticker</th>
+              <th>Company</th>
+              <th class="hide-mobile">Sub-industry</th>
+              <th style="text-align:right">Units</th>
+              <th style="text-align:right">Price</th>
+              <th style="text-align:right">Value (SGD)</th>
+              <th style="text-align:right">% port.</th>
+            </tr></thead>
+            <tbody>
+              ${stList.map(st=>{
+                const priceStr=st.currency==='THB'?`฿${st.lastPrice.toFixed(2)}`:st.currency==='EUR'?`€${st.lastPrice.toFixed(2)}`:st.exchange==='SG'?`S$${st.lastPrice.toFixed(2)}`:`US$${st.lastPrice.toFixed(2)}`;
+                return `<tr>
+                  <td style="font-family:monospace;font-size:12px;font-weight:600;color:var(--blue);padding-left:20px">${st.ticker}</td>
+                  <td style="font-size:12px">${st.companyName}</td>
+                  <td class="hide-mobile" style="font-size:11px;color:var(--text3)">${st.fullInd}</td>
+                  <td style="text-align:right;font-size:12px">${st.units.toLocaleString()}</td>
+                  <td style="text-align:right;font-size:12px;color:var(--text2)">${priceStr}</td>
+                  <td style="text-align:right;font-size:12px;font-weight:500">${fmtK(st.valSGD)}</td>
+                  <td style="text-align:right;font-size:11px;color:var(--text2)">${(st.valSGD/allTotal*100).toFixed(1)}%</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`;
+      mktBody.appendChild(grpDiv);
+    });
   });
 }
 
-function showUpdateBanner(){
-  const existing = document.getElementById('update-banner');
-  if(existing) return;
-  const b = document.createElement('div');
-  b.id = 'update-banner';
-  b.style.cssText = 'position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1a1a18;color:#f0ede8;padding:12px 18px;border-radius:10px;display:flex;align-items:center;gap:12px;font-size:13px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.3);white-space:nowrap';
-  b.innerHTML = `<span>🆕 New version available</span>
-    <button onclick="applyUpdate()" style="background:#1D9E75;color:white;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;font-family:inherit">Update now</button>
-    <button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#9a9a96;font-size:18px;cursor:pointer;line-height:1">×</button>`;
-  document.body.appendChild(b);
+// ── Collapse/expand helpers ───────────────────────────────────────────
+function insToggleMkt(mktId){
+  const body=document.getElementById(mktId+'-body');
+  const icon=document.getElementById(mktId+'-icon');
+  if(!body) return;
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'block';
+  if(icon) icon.textContent=open?'▶':'▼';
+}
+function insToggleGrp(grpId){
+  const body=document.getElementById(grpId+'-body');
+  const icon=document.getElementById(grpId+'-icon');
+  if(!body) return;
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'block';
+  if(icon){ icon.textContent=open?'▶':'▼'; icon.style.transform=open?'':'rotate(90deg)'; }
+}
+function insExpandAll(expand){
+  // Markets
+  ['US','SG','TH'].forEach(ex=>{
+    const b=document.getElementById(`ins-mkt-${ex}-body`);
+    const ic=document.getElementById(`ins-mkt-${ex}-icon`);
+    if(b){ b.style.display=expand?'block':'none'; }
+    if(ic){ ic.textContent=expand?'▼':'▶'; }
+  });
+  // All groups
+  document.querySelectorAll('[id^="ins-grp-"]').forEach(el=>{
+    if(el.id.endsWith('-body')){ el.style.display=expand?'block':'none'; }
+    if(el.id.endsWith('-icon')){ el.textContent=expand?'▼':'▶'; el.style.transform=expand?'rotate(90deg)':''; }
+  });
 }
 
+// ── Rebalancing detail panel ─────────────────────────────────────────
+let _rebalOpenKey = null;
+function toggleRebalDetail(key, color){
+  const panel=document.getElementById('rebal-detail'); if(!panel) return;
+  if(_rebalOpenKey===key && panel.style.display!=='none'){
+    panel.style.display='none'; _rebalOpenKey=null;
+    // Remove highlight
+    document.querySelectorAll('#rebalTable tr').forEach(r=>r.style.background='');
+    return;
+  }
+  _rebalOpenKey=key;
+  // Highlight selected row
+  document.querySelectorAll('#rebalTable tr').forEach(r=>r.style.background='');
+  event.currentTarget.style.background=color+'18';
+
+  // Find stocks in this category
+  const catStocks=stocks.filter(st=>{ return (STOCK_CATEGORY[st.ticker]||'')=== key; });
+  if(!catStocks.length){
+    panel.innerHTML=`<p style="font-size:12px;color:var(--text2);padding:8px">No stock positions currently tracked in this category.</p>`;
+    panel.style.display='block'; return;
+  }
+
+  const rows=catStocks.map(st=>{
+    const val=getStockValueSGD(st);
+    const priceStr=st.currency==='THB'?`฿${(st.lastPrice||0).toFixed(2)}`:st.currency==='EUR'?`€${(st.lastPrice||0).toFixed(2)}`:st.exchange==='SG'?`S$${(st.lastPrice||0).toFixed(2)}`:`US$${(st.lastPrice||0).toFixed(2)}`;
+    const chg=st.lastChange!=null?`<span style="font-size:10px;color:${st.lastChange>=0?'var(--green)':'var(--red)'};margin-left:4px">${st.lastChange>=0?'+':''}${st.lastChange.toFixed(1)}%</span>`:'';
+    return `<tr>
+      <td style="font-family:monospace;font-size:12px;font-weight:600;color:${color}">${st.ticker}</td>
+      <td style="font-size:12px">${st.companyName}</td>
+      <td style="text-align:right;font-size:12px">${st.units.toLocaleString()}</td>
+      <td style="text-align:right;font-size:12px">${priceStr}${chg}</td>
+      <td style="text-align:right;font-size:12px;font-weight:600">${val?fmtK(val):'—'}</td>
+    </tr>`;
+  }).join('');
+
+  panel.innerHTML=`
+    <div style="font-size:12px;font-weight:500;color:${color};margin-bottom:8px">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:6px"></span>
+      Positions in this category
+    </div>
+    <div style="overflow-x:auto">
+    <table class="stock-table">
+      <thead><tr>
+        <th>Ticker</th><th>Company</th>
+        <th style="text-align:right">Units</th>
+        <th style="text-align:right">Price</th>
+        <th style="text-align:right">Value (SGD)</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  panel.style.display='block';
+}
+
+// ════════════════════════════════════════════════════════════════════
+// INIT
+// ════════════════════════════════════════════════════════════════════
+loadAll();
+render();
+updateBackupBanner();
+if(stocks.some(s=>!s.lastPrice)){
+  setTimeout(()=>refreshAllPrices(false), 800);
+}
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').then(reg=>{
+    reg.update();
+    reg.addEventListener('updatefound',()=>{
+      const newSW=reg.installing;
+      newSW.addEventListener('statechange',()=>{
+        if(newSW.state==='installed'&&navigator.serviceWorker.controller) showUpdateBanner();
+      });
+    });
+  }).catch(()=>{});
+  navigator.serviceWorker.addEventListener('controllerchange',()=>window.location.reload());
+}
+function showUpdateBanner(){
+  const existing=document.getElementById('update-banner'); if(existing) return;
+  const b=document.createElement('div');
+  b.id='update-banner';
+  b.style.cssText='position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1a1a18;color:#f0ede8;padding:12px 18px;border-radius:10px;display:flex;align-items:center;gap:12px;font-size:13px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.3);white-space:nowrap';
+  b.innerHTML=`<span>🆕 New version available</span><button onclick="applyUpdate()" style="background:#1D9E75;color:white;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;font-family:inherit">Update now</button><button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#9a9a96;font-size:18px;cursor:pointer;line-height:1">×</button>`;
+  document.body.appendChild(b);
+}
 function applyUpdate(){
   if('serviceWorker' in navigator){
     navigator.serviceWorker.getRegistration().then(reg=>{
-      if(reg && reg.waiting){
-        reg.waiting.postMessage('skipWaiting');
-      } else {
-        window.location.reload();
-      }
+      if(reg&&reg.waiting) reg.waiting.postMessage('skipWaiting');
+      else window.location.reload();
     });
-  } else {
-    window.location.reload();
-  }
+  } else window.location.reload();
 }
 </script>
 </body>
