@@ -699,6 +699,24 @@ async function fetchNameOnly(st) {
 }
 
 
+function applyQuote(id, q) {
+  const i = stocks.findIndex(x => x.id === id);
+  if (i < 0) return;
+  if (q.price && q.price > 0) {
+    stocks[i].lastPrice   = q.price;
+    stocks[i].lastChange  = q.change;
+    stocks[i].lastUpdated = new Date().toISOString();
+    stocks[i].priceSource = q.source || 'Yahoo';
+  }
+  if (!stocks[i].nameLocked) {
+    if (TICKER_NAME_LOCK[stocks[i].ticker]) {
+      stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
+    } else if (q.longName && q.longName !== stocks[i].ticker) {
+      stocks[i].companyName = q.longName;
+    }
+  }
+}
+
 async function refreshAllPrices(forceAll = false) {
   const btn = document.getElementById('refreshBtn');
   if (btn) { btn.disabled = true; }
