@@ -51,7 +51,7 @@ Edit button per stock to override DPS and frequency; reset to researched default
 **Asset map**: visual investable vs locked split bar + asset cards tagged:
 - ✅ Investable: stocks, cash
 - 🔒 Locked: CPF, insurance
-- 🚫 No income / No income to you: SG property (no rental), TH property (rented to parents)
+- 🚫 No income / No income to you: SG property, TH property
 
 **Allocation vs target**: single table combining description, current %, target %, gap in SGD, and action (Buy more / Trim / hold). Click any row to expand a positions panel showing which specific stocks are in that category with live prices. Target allocation calibrated for Singapore retirement income goal — maximises tax-free SGX income.
 
