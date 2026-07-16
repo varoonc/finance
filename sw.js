@@ -1,7 +1,7 @@
 // Net Worth Tracker — Service Worker
 // Caches the app shell for offline use. Stock prices always fetch live.
 
-const CACHE = 'nwt-v7'; // ← bump this string every time you deploy a new version
+const CACHE = 'nwt-v8'; // ← bump this string every time you deploy a new version
 const SHELL = [
   './',
   './index.html',
@@ -43,6 +43,7 @@ self.addEventListener('fetch', e => {
     url.includes('allorigins.win') ||
     url.includes('corsproxy.io') ||
     url.includes('codetabs.com') ||
+    url.includes('cors.x2u.in') ||
     url.includes('google.com/finance')
   ) {
     return; // let the browser handle it normally
