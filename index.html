@@ -251,12 +251,10 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
   <input type="number" id="edit-units" min="0" step="any" style="margin-bottom:12px;">
   <label>Company name <span style="color:var(--text3);font-weight:400">(edit to override auto-fetch)</span></label>
   <input type="text" id="edit-company" style="margin-bottom:4px;">
-  <label style="display:flex;align-items:center;gap:7px;margin-bottom:12px;cursor:pointer;font-size:12px;">
+  <label style="display:flex;align-items:center;gap:7px;margin-bottom:14px;cursor:pointer;font-size:12px;">
     <input type="checkbox" id="edit-lock-name" style="width:auto;margin:0;">
     Lock name — don't overwrite on refresh
   </label>
-  <label>Manual price override <span style="color:var(--text3);font-weight:400">(leave blank to use auto-fetch)</span></label>
-  <input type="number" id="edit-price" min="0" step="any" placeholder="e.g. 0.985 — only needed if auto-fetch fails" style="margin-bottom:14px;">
   <div class="modal-btns">
     <button class="btn btn-primary" style="flex:1" onclick="submitEditStock()">Save</button>
     <button class="btn btn-danger" onclick="deleteStockConfirm()">Remove</button>
@@ -289,75 +287,57 @@ function computeGoal(){
 }
 
 // ── Two-stream retirement projection ─────────────────────────────────
-// Investable assets (stocks + cash) grow at annualReturn %.
-// Locked assets grow at their own slower fixed rates:
-//   CPF OA: 2.5%, CPF SA: 4%, Property: 2% nominal, Insurance: 1.5%
-// This gives a far more realistic picture than applying one rate to total nav.
-
-function computeAssetStreams(){
-  const t = computeTotals();
-  let cpf=0, propSG=0, propTH=0, insur=0;
-  assets.forEach(a=>{
-    if(a.isLiability) return;
+function computeAssetStreams() {
+  let stockVal = 0, cash = 0, cpf = 0, propSG = 0, propTH = 0, insur = 0, liab = 0;
+  stocks.forEach(st => { const v = getStockValueSGD(st); if (v) stockVal += v; });
+  assets.forEach(a => {
     const v = getAssetValueSGD(a);
-    const cat = a.category;
-    const name = (a.name||'').toLowerCase();
-    if(cat==='CPF') cpf += v;
-    else if(cat==='Property'){
-      if(a.origCurrency==='THB'||name.includes('lpn')||name.includes('klong')) propTH+=v;
-      else propSG+=v;
-    }
-    else if(cat==='Insurance') insur+=v;
+    if (a.isLiability) { liab += v; return; }
+    const cat = a.category, name = (a.name||'').toLowerCase();
+    if (cat==='Cash') cash += v;
+    else if (cat==='CPF') cpf += v;
+    else if (cat==='Property') {
+      if (a.origCurrency==='THB'||name.includes('lpn')||name.includes('klong')||name.includes(' th')) propTH += v;
+      else propSG += v;
+    } else if (cat==='Insurance') insur += v;
   });
-  const investable = t.stockValSGD + (t.nav - t.stockValSGD - cpf - propSG - propTH - insur - t.totalLiab > 0
-    ? t.nav - t.stockValSGD - cpf - propSG - propTH - insur - t.totalLiab : 0);
-  // Cash = nav minus stocks, CPF, property, insurance, liabilities
-  const cash = Math.max(0, t.nav - t.stockValSGD - cpf - propSG - propTH - insur);
+  return { investable: stockVal+cash, cpf, propSG, propTH, insur, liab };
+}
+
+function projectStreams(years) {
+  const s = computeAssetStreams();
+  const ri = goalSettings.annualReturn / 100;
   return {
-    investable: t.stockValSGD + cash,  // stocks + all cash — grows at annualReturn
-    cpf,          // grows at ~3% blended (OA 2.5%, SA 4%)
-    propSG,       // grows at ~2% nominal (Singapore property long run)
-    propTH,       // grows at ~1.5% nominal (Thai property, discounted for illiquidity)
-    insur,        // grows at ~1.5% (fixed maturity schedule)
-    liab: t.totalLiab,
-    nav: t.nav,
+    inv:  s.investable * Math.pow(1+ri,   years),
+    cpf:  s.cpf        * Math.pow(1.030,  years),
+    psg:  s.propSG     * Math.pow(1.020,  years),
+    pth:  s.propTH     * Math.pow(1.015,  years),
+    ins:  s.insur      * Math.pow(1.015,  years),
+    liab: s.liab, investableNow: s.investable,
   };
 }
 
-function projectStreams(years){
-  const s = computeAssetStreams();
-  const ri = goalSettings.annualReturn / 100;  // investable: user-set rate
-  const rc = 0.03;   // CPF blended
-  const rp = 0.02;   // Property SG
-  const rt = 0.015;  // Property TH
-  const rn = 0.015;  // Insurance
-  const inv = s.investable * Math.pow(1+ri, years);
-  const cpf = s.cpf     * Math.pow(1+rc, years);
-  const psg = s.propSG  * Math.pow(1+rp, years);
-  const pth = s.propTH  * Math.pow(1+rt, years);
-  const ins = s.insur   * Math.pow(1+rn, years);
-  return { inv, cpf, psg, pth, ins, liab: s.liab };
-}
-
-// Monthly savings needed — applied only to investable portion
+// Monthly savings needed — uses two-stream model, investable assets only
 function computeMonthlySavingsNeeded(nav){
   const {nestEgg} = computeGoal();
   const r = goalSettings.annualReturn / 100;
   const n = goalSettings.yearsToRetire;
-  const s = computeAssetStreams();
-
-  // Project each stream forward
-  const proj = projectStreams(n);
-  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
-  const gap = Math.max(0, nestEgg - projTotal);
-  if(gap <= 0) return 0;
-
-  // Savings go into investable assets, so FV uses investable return rate
-  const monthlyRate = r / 12;
-  const months = n * 12;
-  const growthFactor = Math.pow(1 + r, n);
-  if(r < 0.0001) return gap / months;
-  return gap * monthlyRate / (growthFactor - 1);
+  try {
+    const proj = projectStreams(n);
+    const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
+    const gap = Math.max(0, nestEgg - projTotal);
+    if (gap <= 0) return 0;
+    const growthFactor = Math.pow(1+r, n);
+    if (r < 0.0001) return gap / (n*12);
+    return gap * (r/12) / (growthFactor - 1);
+  } catch(e) {
+    // Fallback to simple single-rate if streams fail
+    const growthFactor = Math.pow(1+r, n);
+    const gap = Math.max(0, nestEgg - nav * growthFactor);
+    if (gap <= 0) return 0;
+    if (r < 0.0001) return gap / (n*12);
+    return gap * (r/12) / (growthFactor - 1);
+  }
 }
 
 let usdSgdRate = 1.34;
@@ -452,18 +432,37 @@ function saveAll(){
   }catch(e){ console.error('saveAll error',e); }
 }
 
-// Export JSON file — call this to create the portable companion file
+// Export JSON file — works on https:// (direct download) and file:// (opens in new tab → Ctrl+S)
 function exportData(silent=false){
   const payload = buildDataPayload();
   payload.exportedAt = new Date().toISOString();
   const data = JSON.stringify(payload, null, 2);
-  const blob = new Blob([data], {type:'application/json'});
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url;
-  a.download = 'finance-data.json'; // fixed name so it replaces the previous one
-  a.click();
-  URL.revokeObjectURL(url);
+  const filename = 'finance-backup-' + todayStr() + '.json';
+
+  if(location.protocol === 'file:'){
+    // Chrome blocks programmatic downloads from file:// — open in new tab instead
+    const w = window.open('', '_blank');
+    if(w){
+      w.document.write('<html><head><title>' + filename + '</title></head><body>' +
+        '<p style="font-family:sans-serif;font-size:14px;padding:16px;color:#555">' +
+        '💾 Press <strong>Ctrl+S</strong> (Win) or <strong>Cmd+S</strong> (Mac) to save as <strong>' + filename + '</strong></p>' +
+        '<pre style="font-family:monospace;font-size:12px;padding:16px;white-space:pre-wrap">' +
+        data.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</pre></body></html>');
+      w.document.close();
+    } else {
+      alert('Pop-up blocked. Please allow pop-ups for this page, then try again.\n\nOr use the app from varoonc.github.io/finance/ where export works directly.');
+    }
+  } else {
+    // https:// — normal blob download
+    const blob = new Blob([data], {type:'application/json'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   localStorage.setItem('pf2_lastExport', new Date().toISOString());
   if(!silent) updateBackupBanner();
 }
@@ -594,188 +593,326 @@ const SEED_ASSETS=[
 // Rotates through proxies, retries failed tickers, adds jitter delay
 // to avoid rate-limiting. Google Finance scraped as last-resort fallback.
 
-// ── CORS Proxy list ───────────────────────────────────────────────────
-// Multiple CORS proxies — tried in order, first success wins
-// Your own Cloudflare Worker is first — reliable, no rate limits, 100K req/day free
 const PROXIES = [
-  url => `https://throbbing-brook-dd8d.varoonc.workers.dev?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function proxyFetch(yahooUrl, timeoutMs=10000) {
-  for (const proxy of PROXIES) {
-    try {
-      const r = await Promise.race([
-        fetch(proxy(yahooUrl)),
-        new Promise((_,rej) => setTimeout(()=>rej(new Error('Timeout')), timeoutMs))
-      ]);
-      if (!r.ok) throw new Error('HTTP '+r.status);
-      const text = await r.text();
-      if (!text || text[0]==='<') throw new Error('HTML response');
-      return text;
-    } catch(e) { /* try next proxy */ }
-  }
-  throw new Error('All proxies failed');
+// Cross-browser fetch with timeout.
+// Cache-busting is added to the PROXY wrapper URL only — Yahoo rejects unknown
+// params and returns stale data when they appear in the Yahoo URL itself.
+function fetchWithDeadline(url, ms=6000) {
+  // Bust the browser/proxy cache by making each proxy URL unique
+  const bust = `_t=${Date.now()}`;
+  const bustUrl = url.includes('?') ? `${url}&${bust}` : `${url}?${bust}`;
+  return Promise.race([
+    fetch(bustUrl),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
 }
 
-async function tryYahooV8(symbol) {
-  for (const host of ['query1','query2']) {
+// Wrap a Yahoo URL in a proxy with cache-busting.
+// The _b timestamp is embedded INSIDE the Yahoo URL so allorigins sees a
+// unique ?url= value each time — defeating its caching layer.
+// NOTE: Only use bustingProxyWrap for price/chart APIs — Yahoo's search
+// endpoint rejects unknown parameters and returns empty results.
+function proxyWrap(proxyFn, yahooUrl, ms=6000) {
+  const bust = `&_b=${Date.now()}`;
+  const bustYahooUrl = yahooUrl + bust;
+  const proxied = proxyFn(bustYahooUrl);
+  return Promise.race([
+    fetch(proxied),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
+}
+
+// Plain proxy wrap WITHOUT cache-busting — for search endpoint which rejects unknown params
+function proxyWrapSearch(proxyFn, yahooUrl, ms=6000) {
+  const proxied = proxyFn(yahooUrl);
+  // Add bust on the proxy URL itself (not inside Yahoo URL) — less effective but harmless
+  const bustProxy = proxied + (proxied.includes('?') ? '&' : '?') + `_t=${Date.now()}`;
+  return Promise.race([
+    fetch(bustProxy),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
+  ]);
+}
+
+function yahooSymbol(st) {
+  if (st.exchange === 'SG') {
+    const t = st.ticker.trim();
+    if (t.endsWith('.SI')) return t;
+    if (t === 'SET EUR') return 'SET.SI';
+    return t + '.SI';
+  }
+  if (st.exchange === 'TH') {
+    const t = st.ticker.trim();
+    if (t.endsWith('.BK')) return t;
+    return t + '.BK';
+  }
+  return st.ticker; // US stocks use ticker as-is
+}
+
+// Known ticker name overrides — only needed for tickers where Yahoo consistently
+// returns the WRONG company name (not just fails to return one).
+// For missing names, the app now auto-retries name lookup independently.
+const TICKER_NAME_LOCK = {};
+
+// Try Yahoo v8 chart endpoint
+async function tryYahooProxy(proxyFn, symbol) {
+  const hosts = ['query1', 'query2'];
+  let lastErr;
+  for (const host of hosts) {
     try {
-      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
-      const text = await proxyFetch(url);
+      const yahooUrl = `https://${host}.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
+      const r = await proxyWrap(proxyFn, yahooUrl, 5000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
       const d = JSON.parse(text);
       const meta = d?.chart?.result?.[0]?.meta;
       if (!meta || !meta.regularMarketPrice) throw new Error('No price');
       const prev = meta.chartPreviousClose || meta.previousClose;
       return {
         price: meta.regularMarketPrice,
-        change: prev ? ((meta.regularMarketPrice-prev)/prev*100) : null,
-        currency: meta.currency||'USD',
-        longName: meta.longName||meta.shortName||symbol,
+        change: prev ? ((meta.regularMarketPrice - prev) / prev * 100) : null,
+        currency: meta.currency || 'USD',
+        longName: meta.longName || meta.shortName || symbol,
         source: 'Yahoo',
       };
-    } catch(e) {}
+    } catch(e) { lastErr = e; }
   }
-  throw new Error('v8 failed for '+symbol);
+  throw lastErr;
 }
 
+// Try Yahoo v7 quote endpoint — primary source, returns true current price
+// including after-hours and pre-market when markets are closed
+async function tryYahooV7(proxyFn, symbol) {
+  const fields = 'regularMarketPrice,regularMarketPreviousClose,postMarketPrice,preMarketPrice,longName,shortName,currency,marketState';
+  // Try both query1 and query2 — one may be rate-limited or blocked on mobile
+  const hosts = ['query1', 'query2'];
+  let lastErr;
+  for (const host of hosts) {
+    try {
+      const yahooUrl = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&fields=${fields}`;
+      const r = await proxyWrap(proxyFn, yahooUrl, 5000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
+      const d = JSON.parse(text);
+      const q = d?.quoteResponse?.result?.[0];
+      if (!q || !q.regularMarketPrice) throw new Error('No price');
+      const prev = q.regularMarketPreviousClose;
+      const livePrice = q.postMarketPrice || q.regularMarketPrice || q.preMarketPrice;
+      const change = prev ? ((q.regularMarketPrice - prev) / prev * 100) : null;
+      return {
+        price: livePrice,
+        change,
+        currency: q.currency || 'USD',
+        longName: q.longName || q.shortName || symbol,
+        source: 'Yahoo',
+      };
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+// Google Finance scrape fallback
 async function tryGoogleFinance(st) {
-  const exchanges = st.exchange==='SG' ? ['SGX'] : st.exchange==='TH' ? ['BKK'] : ['NASDAQ','NYSE','NYSEARCA','NYSEMKT'];
-  const ao = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const exchanges = st.exchange === 'SG' ? ['SGX'] : ['NASDAQ','NYSE','NYSEARCA','NYSEMKT'];
+  const proxyFn = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
   for (const exch of exchanges) {
     try {
       const gUrl = `https://www.google.com/finance/quote/${encodeURIComponent(st.ticker)}:${exch}`;
-      const r = await Promise.race([fetch(ao(gUrl)), new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout')),12000))]);
+      const r = await proxyWrap(proxyFn, gUrl, 7000);
       if (!r.ok) continue;
       const html = await r.text();
       const m = html.match(/class="YMlKec fxKbKc"[^>]*>([^<]+)</);
       if (!m) continue;
-      const price = parseFloat(m[1].replace(/[^0-9.]/g,''));
+      const price = parseFloat(m[1].replace(/[^0-9.]/g, ''));
       if (!price) continue;
       const changeM = html.match(/([+-]?\d+\.?\d*)\s*\(([+-]?\d+\.?\d*)%\)/);
       const changePct = changeM ? parseFloat(changeM[2]) : null;
       const currM = html.match(/data-currency-code="([A-Z]{3})"/);
-      const currency = currM ? currM[1] : (st.exchange==='SG'?'SGD':st.exchange==='TH'?'THB':'USD');
-      return {price, change:changePct, currency, longName:st.companyName, source:'Google'};
+      const currency = currM ? currM[1] : (st.exchange === 'SG' ? 'SGD' : 'USD');
+      return { price, change: changePct, currency, longName: st.companyName, source: 'Google' };
     } catch(e) { continue; }
   }
-  throw new Error('Google failed for '+st.ticker);
+  throw new Error('Google also failed');
 }
 
+// Fetch a single quote — tries v7 first (most accurate current price),
+// then v8 chart as fallback, then Google as last resort
 async function fetchQuote(st) {
   const symbol = yahooSymbol(st);
-  try { return await tryYahooV8(symbol); }
-  catch(e) { return await tryGoogleFinance(st); }
+  for (let pi = 0; pi < PROXIES.length; pi++) {
+    try { return await tryYahooV7(PROXIES[pi], symbol); } catch(e) {}
+    try { return await tryYahooProxy(PROXIES[pi], symbol); } catch(e) {}
+  }
+  try { return await tryGoogleFinance(st); } catch(e) {}
+  throw new Error('All sources failed for ' + st.ticker);
 }
 
-async function searchYahoo(query) {
-  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0`;
-  try {
-    const text = await proxyFetch(url, 8000);
-    const d = JSON.parse(text);
-    const results = (d?.quotes||[]).filter(q=>{
-      const qt=(q.quoteType||'').toUpperCase();
-      return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||qt.includes('REIT')||qt.includes('TRUST');
-    });
-    return results.length ? results : (d?.quotes||[]).slice(0,6);
-  } catch(e) { return []; }
-}
-
-async function fetchNameOnly(st) {
-  if (TICKER_NAME_LOCK[st.ticker]) return TICKER_NAME_LOCK[st.ticker];
-  try {
-    const q = await tryYahooV8(yahooSymbol(st));
-    if (q.longName && q.longName !== st.ticker) return q.longName;
-  } catch(e) {}
-  try {
-    const results = await searchYahoo(yahooSymbol(st));
-    const match = results.find(r => r.symbol===yahooSymbol(st) || r.symbol===st.ticker);
-    if (match) return match.longname || match.shortname || null;
-  } catch(e) {}
-  return null;
-}
-
-
+// Apply a fetched result back to the stocks array
 function applyQuote(id, q) {
   const i = stocks.findIndex(x => x.id === id);
   if (i < 0) return;
-  if (q.price && q.price > 0) {
-    stocks[i].lastPrice   = q.price;
-    stocks[i].lastChange  = q.change;
-    stocks[i].lastUpdated = new Date().toISOString();
-    stocks[i].priceSource = q.source || 'Yahoo';
-  }
+  stocks[i].lastPrice = q.price;
+  stocks[i].lastChange = q.change;
+  stocks[i].lastUpdated = new Date().toISOString();
+  stocks[i].priceSource = q.source;
+  // Name update: update if not user-locked AND (hardcoded override exists OR API returned a real name)
+  // Also update if current name still equals the ticker (was never resolved)
   if (!stocks[i].nameLocked) {
     if (TICKER_NAME_LOCK[stocks[i].ticker]) {
       stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
-    } else if (q.longName && q.longName !== stocks[i].ticker) {
+    } else if (q.longName && q.longName !== stocks[i].ticker && q.longName !== yahooSymbol(stocks[i])) {
+      // Got a real name from API — always apply it
       stocks[i].companyName = q.longName;
     }
   }
 }
 
-async function refreshAllPrices(forceAll = false) {
+// Resolve company name for stocks where name still equals the ticker symbol.
+// Uses Yahoo search — lightweight, works even when price fetch fails.
+async function fetchNameOnly(st) {
+  const symbol = yahooSymbol(st);
+  try {
+    // Try v7 quote first — returns name along with price
+    for (let pi = 0; pi < PROXIES.length; pi++) {
+      try {
+        const q = await tryYahooV7(PROXIES[pi], symbol);
+        if (q.longName && q.longName !== st.ticker && q.longName !== symbol) {
+          return q.longName;
+        }
+      } catch(e) {}
+    }
+    // Fallback: use search endpoint — name-only, no price needed
+    const results = await searchYahoo(symbol);
+    const match = results.find(r =>
+      r.symbol === symbol ||
+      r.symbol === st.ticker ||
+      r.symbol === st.ticker + '.SI' ||
+      r.symbol === st.ticker + '.BK'
+    );
+    if (match) return match.longname || match.shortname || null;
+  } catch(e) {}
+  return null;
+}
+async function refreshAllPrices(forceAll=false) {
   const btn = document.getElementById('refreshBtn');
-  if (btn) { btn.disabled = true; }
+  if (!btn) return;
+  btn.disabled = true;
 
-  const toFetch = (forceAll || stocks.every(s => s.lastPrice))
-    ? [...stocks]
-    : stocks.filter(s => !s.lastPrice || s.priceSource === 'Manual');
-
+  const missing = stocks.filter(s => !s.lastPrice);
+  // Force-refresh all when user explicitly clicks; only fetch missing on auto-load
+  const toFetch = (forceAll || missing.length === 0) ? [...stocks] : missing;
   const total = toFetch.length;
   let done = 0;
+  const failed = [];
+  const BATCH = 4;         // slightly smaller batch — more polite on mobile networks
+  const STOCK_TIMEOUT = 12000; // longer timeout for slower mobile connections
 
-  for (const st of toFetch) {
-    if (btn) btn.textContent = `↻ ${done + 1}/${total}`;
-    try {
-      const q = await fetchQuote(st);
-      applyQuote(st.id, q);
-    } catch(e) {
-      console.warn('Failed:', st.ticker, e.message);
+  btn.textContent = `↻ 0/${total}`;
+
+  async function fetchWithTimeout(st) {
+    return Promise.race([
+      fetchQuote(st),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), STOCK_TIMEOUT))
+    ]);
+  }
+
+  // First pass — parallel batches
+  for (let i = 0; i < toFetch.length; i += BATCH) {
+    const batch = toFetch.slice(i, i + BATCH);
+    await Promise.all(batch.map(async st => {
+      try {
+        const q = await fetchWithTimeout(st);
+        applyQuote(st.id, q);
+      } catch(e) {
+        console.warn('Fetch failed:', st.ticker, e.message);
+        failed.push(st);
+      }
+      done++;
+      const b = document.getElementById('refreshBtn');
+      if (b) b.textContent = `↻ ${done}/${total}`;
+      render();
+    }));
+    if (i + BATCH < toFetch.length) await sleep(200); // slightly longer pause on mobile
+  }
+
+  // Retry pass — sequential, one at a time, longer timeout
+  if (failed.length > 0) {
+    const b = document.getElementById('refreshBtn');
+    if (b) b.textContent = `↻ Retrying ${failed.length}…`;
+    await sleep(1500);
+    for (const st of failed) {
+      const symbol = yahooSymbol(st);
+      for (let pi = 0; pi < PROXIES.length; pi++) {
+        try {
+          const q = await Promise.race([
+            tryYahooProxy(PROXIES[pi], symbol),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 10000))
+          ]);
+          applyQuote(st.id, q);
+          break;
+        } catch(e) { await sleep(300); }
+      }
+      render();
+      await sleep(400);
     }
-    done++;
-    render();
-    if (done < total) await sleep(600); // 600ms between each — stays under allorigins rate limit
   }
 
   saveAll(); render();
   const still = stocks.filter(s => !s.lastPrice).length;
-  if (btn) {
-    btn.disabled = false;
-    btn.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
+  const b = document.getElementById('refreshBtn');
+  if (b) {
+    b.disabled = false;
+    b.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
   }
 
-  // Resolve names for stocks where name still equals ticker
-  const needsName = stocks.filter(s => !s.nameLocked && s.companyName === s.ticker && !TICKER_NAME_LOCK[s.ticker]);
-  for (const st of needsName) {
-    const name = await fetchNameOnly(st);
-    if (name) stocks = stocks.map(s => s.id === st.id ? { ...s, companyName: name } : s);
-    await sleep(600);
+  // Auto-resolve missing company names (where name still equals ticker symbol)
+  // Run quietly in background after prices are done
+  const needsName = stocks.filter(s =>
+    !s.nameLocked &&
+    s.companyName === s.ticker &&
+    !TICKER_NAME_LOCK[s.ticker]
+  );
+  if (needsName.length > 0) {
+    for (const st of needsName) {
+      const name = await fetchNameOnly(st);
+      if (name) {
+        stocks = stocks.map(s => s.id === st.id ? {...s, companyName: name} : s);
+      }
+      await sleep(300);
+    }
+    if (needsName.length > 0) { saveAll(); render(); }
   }
-  if (needsName.length > 0) { saveAll(); render(); }
 }
 
 async function searchYahoo(query){
   const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
-  try {
-    const r = await Promise.race([
-      fetch(PROXY_FN(yahooUrl)),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 8000))
-    ]);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const text = await r.text();
-    if (!text || text[0] === '<') throw new Error('Blocked');
-    const d = JSON.parse(text);
-    const results = (d?.quotes||[]).filter(q => {
-      const qt = (q.quoteType||'').toUpperCase();
-      return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||
-             qt.includes('EQUITY')||qt.includes('REIT')||qt.includes('TRUST');
-    });
-    return results.length ? results : (d?.quotes||[]).slice(0,6);
-  } catch(e) { return []; }
+  for (let pi = 0; pi < PROXIES.length; pi++) {
+    try {
+      // Use proxyWrapSearch — search endpoint rejects _b timestamp inside URL
+      const r = await proxyWrapSearch(PROXIES[pi], yahooUrl, 6000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
+      const d = JSON.parse(text);
+      // Include EQUITY, ETF, REIT, TRUST — covers SGX REITs, TH stocks, US stocks
+      const results = (d?.quotes||[]).filter(q => {
+        const qt = (q.quoteType||'').toUpperCase();
+        return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||
+               qt.includes('EQUITY')||qt.includes('REIT')||qt.includes('TRUST');
+      });
+      // Fallback: if filter removed everything, return all (handles unusual quoteTypes)
+      return results.length ? results : (d?.quotes||[]).slice(0,6);
+    } catch(e) { /* try next proxy */ }
+  }
+  return [];
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1022,11 +1159,10 @@ function openEditStock(id){
   const valSGD=getStockValueSGD(st);
   document.getElementById('edit-stock-info').innerHTML=`
     <div style="font-weight:600">${st.ticker} · ${st.exchange} · ${st.currency}</div>
-    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--amber);font-size:12px;margin-top:4px">⚠ Price not yet fetched — you can enter it manually below</div>'}`;
+    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--text3);font-size:12px;margin-top:4px">Price not yet fetched</div>'}`;
   document.getElementById('edit-units').value=st.units;
   document.getElementById('edit-company').value=st.companyName||'';
   document.getElementById('edit-lock-name').checked=!!(st.nameLocked);
-  document.getElementById('edit-price').value=st.lastPrice||'';
   document.getElementById('edit-stock-modal').style.display='flex';
   setTimeout(()=>document.getElementById('edit-units').focus(),60);
 }
@@ -1035,18 +1171,7 @@ function submitEditStock(){
   const units=parseFloat(document.getElementById('edit-units').value)||0;
   const companyName=document.getElementById('edit-company').value.trim();
   const nameLocked=document.getElementById('edit-lock-name').checked;
-  const manualPrice=parseFloat(document.getElementById('edit-price').value)||null;
-  stocks=stocks.map(s=>{
-    if(s.id!==editStockId) return s;
-    const updated={...s, units, companyName:companyName||s.companyName, nameLocked};
-    // Only override price if user explicitly entered one
-    if(manualPrice && manualPrice>0){
-      updated.lastPrice=manualPrice;
-      updated.lastUpdated=new Date().toISOString();
-      updated.priceSource='Manual';
-    }
-    return updated;
-  });
+  stocks=stocks.map(s=>s.id===editStockId?{...s,units,companyName:companyName||s.companyName,nameLocked}:s);
   closeEditStock(); saveAll(); render();
 }
 function deleteStockConfirm(){
@@ -1126,10 +1251,13 @@ function buildTrendChart(snaps, chartId='trendChart'){
     xl+=`<text x="${tx(i).toFixed(1)}" y="${H-PB+14}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.date}</text>`;
   });
 
+  // Large invisible hit-area circles so hover is easy to trigger
   let dots='';
   snaps.forEach((s,i)=>{
+    // Visible dots
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.nav).toFixed(1)}" r="4" fill="var(--blue)" pointer-events="none"/>`;
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.totalAssets).toFixed(1)}" r="3" fill="var(--green)" pointer-events="none"/>`;
+    // Large transparent hit area centred between the two dots — catches hover anywhere near either
     const midY=((ty(s.nav)+ty(s.totalAssets))/2).toFixed(1);
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${midY}" r="18" fill="transparent" style="cursor:pointer"
       onmouseenter="showChartTip('${chartId}',${i},this)"
@@ -1141,10 +1269,11 @@ function buildTrendChart(snaps, chartId='trendChart'){
   <div style="display:flex;flex-wrap:wrap;gap:7px 13px;margin-bottom:9px;font-size:12px;color:var(--text2)">
     <span style="display:flex;align-items:center;gap:5px"><span style="width:16px;height:2px;background:var(--blue);display:inline-block"></span>Net worth</span>
     <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--green)" stroke-width="2" stroke-dasharray="4 2"/></svg>Total assets</span>
-    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>${fmtK(nestEgg)} goal</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>$3M goal</span>
     <span style="color:var(--text3);margin-left:4px">· hover or click dots for details</span>
   </div>
   <div style="position:relative">
+    <!-- Floating hover tooltip — stays visible when mouse moves over it -->
     <div id="${chartId}-tip"
       style="display:none;position:absolute;background:var(--bg);border:0.5px solid var(--border2);border-radius:var(--radius-sm);padding:8px 10px;font-size:11px;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:170px;pointer-events:auto;"
       onmouseenter="cancelHideTip('${chartId}')"
@@ -1157,125 +1286,8 @@ function buildTrendChart(snaps, chartId='trendChart'){
       ${dots}${xl}
     </svg>
   </div>
+  <!-- Click-to-expand detail panel below chart -->
   <div id="${chartId}-detail" style="display:none;margin-top:10px;border-top:0.5px solid var(--border);padding-top:10px;"></div>`;
-}
-
-// ── Projection chart — separate from history, 10-year x-axis ──────────
-function buildProjectionChart(){
-  const {nestEgg, retireYear} = computeGoal();
-  const r = goalSettings.annualReturn / 100;
-  const latestNav = snapshots.length ? snapshots[snapshots.length-1].nav : 0;
-  const monthlySavings = computeMonthlySavingsNeeded(latestNav);
-
-  const W=580, H=180, PL=64, PR=30, PT=14, PB=36;
-  const gW=W-PL-PR, gH=H-PT-PB;
-
-  // Build yearly projection points from today to retireYear
-  const yearsLeft = goalSettings.yearsToRetire;
-  const monthsLeft = yearsLeft * 12;
-  const steps = yearsLeft; // one point per year
-
-  // Two-stream model: investable at portfolio rate, locked at own rates
-  const s = computeAssetStreams();
-  const ri = r;
-  const projPoints=[], reqPoints=[];
-
-  for(let i=0; i<=steps; i++){
-    const yrs = (i/steps)*yearsLeft;
-    const months = yrs * 12;
-    const gfi = Math.pow(1+ri/12, months);
-    // Investable: grows at portfolio rate + monthly savings
-    const invProj = s.investable*gfi + (ri>0.0001 ? monthlySavings*(gfi-1)/(ri/12) : monthlySavings*months);
-    // Locked assets grow at their own conservative rates
-    const cpfP = s.cpf    * Math.pow(1.03,  yrs);
-    const psgP = s.propSG * Math.pow(1.02,  yrs);
-    const pthP = s.propTH * Math.pow(1.015, yrs);
-    const insP = s.insur  * Math.pow(1.015, yrs);
-    const projNav = invProj + cpfP + psgP + pthP + insP - s.liab;
-    // Required: PV of nestEgg discounted from retire date at investable return rate
-    const remainMonths = monthsLeft - months;
-    const reqNav = nestEgg / Math.pow(1+ri/12, remainMonths);
-    projPoints.push({x:i, y:projNav});
-    reqPoints.push({x:i, y:reqNav});
-  }
-
-  const allY=[...projPoints.map(p=>p.y),...reqPoints.map(p=>p.y),nestEgg,latestNav,0];
-  const minV=Math.min(0,...allY);
-  const maxV=Math.max(...allY);
-  const rng=maxV-minV||1;
-
-  const tx=i=>PL+(i/steps)*gW;
-  const ty=v=>PT+gH-((v-minV)/rng)*gH;
-
-  // Grid + Y labels
-  let grid='',yl='';
-  [0,.25,.5,.75,1].forEach(t=>{
-    const v=minV+t*rng, y=ty(v).toFixed(1);
-    grid+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
-    yl+=`<text x="${PL-6}" y="${(+y+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;
-  });
-
-  // X labels: yearly
-  let xl='';
-  const CURRENT_YEAR2 = new Date().getFullYear();
-  for(let i=0; i<=steps; i++){
-    if(steps<=10 || i%2===0 || i===steps){
-      xl+=`<text x="${tx(i).toFixed(1)}" y="${H-PB+14}" text-anchor="middle" font-size="9" fill="var(--text3)">${CURRENT_YEAR2+i}</text>`;
-    }
-  }
-
-  // Paths
-  const projPath=projPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`).join('L');
-  const reqPath =reqPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`).join('L');
-  const goalY=ty(nestEgg).toFixed(1);
-
-  // "Today" dot (leftmost point = current nav)
-  const todayNav = computeTotals().nav;
-  const todayX=tx(0).toFixed(1), todayY=ty(todayNav).toFixed(1);
-
-  // Ahead/behind at year 0 (now)
-  const reqNow=reqPoints[0].y;
-  const ahead=todayNav>=reqNow;
-  const statusText=ahead
-    ? `▲ Ahead of required pace`
-    : `▼ Behind required pace by ${fmtK(reqNow-todayNav)}`;
-  const statusCol=ahead?'var(--green)':'var(--red)';
-
-  // Shaded area between proj and req curves
-  const fillPts=[...projPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`),
-                 ...[...reqPoints].reverse().map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`)]
-    .join('L');
-  const fillCol=ahead?'rgba(29,158,117,0.07)':'rgba(226,75,74,0.07)';
-
-  return `
-  <div style="display:flex;flex-wrap:wrap;gap:7px 13px;margin-bottom:6px;font-size:12px;color:var(--text2)">
-    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="#1baf7a" stroke-width="2" stroke-dasharray="6 2"/></svg>Projected growth</span>
-    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--amber)" stroke-width="2" stroke-dasharray="3 2"/></svg>Required pace</span>
-    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>${fmtK(nestEgg)} goal</span>
-    <span style="margin-left:auto;font-size:11px;color:${statusCol};font-weight:500">${statusText}</span>
-  </div>
-  <div style="font-size:11px;color:var(--text3);margin-bottom:8px">
-    Investable assets (${fmtK(s.investable)}) grow at ${goalSettings.annualReturn}% · CPF at 3% · Property at 2% · Monthly savings ${fmtK(monthlySavings)} added to investable
-  </div>
-  <div style="position:relative">
-    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
-      ${grid}${yl}
-      <!-- Goal line -->
-      <line x1="${PL}" y1="${goalY}" x2="${W-PR}" y2="${goalY}" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4 3"/>
-      <!-- Shaded gap between proj and required -->
-      <path d="M${fillPts}Z" fill="${fillCol}"/>
-      <!-- Required pace -->
-      <path d="M${reqPath}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-dasharray="3 2" stroke-linejoin="round"/>
-      <!-- Projected growth -->
-      <path d="M${projPath}" fill="none" stroke="#1baf7a" stroke-width="2" stroke-dasharray="6 2" stroke-linejoin="round"/>
-      <!-- Today marker -->
-      <circle cx="${todayX}" cy="${todayY}" r="5" fill="var(--blue)" stroke="var(--bg)" stroke-width="2"/>
-      <text x="${(+todayX+8).toFixed(1)}" y="${(+todayY+4).toFixed(1)}" font-size="9" fill="var(--blue)">Today ${fmtK(todayNav)}</text>
-      <!-- Retire year marker -->
-      <circle cx="${tx(steps).toFixed(1)}" cy="${ty(nestEgg).toFixed(1)}" r="4" fill="var(--red)" stroke="var(--bg)" stroke-width="2"/>
-      ${xl}
-    </svg>
-  </div>`;
 }
 
 // Tip hide timer — delayed so cursor can move from dot to tooltip
@@ -1466,18 +1478,15 @@ function updateGoal(key, val){
 function _refreshGoalOutputs(){
   const t = computeTotals();
   const {nestEgg, retireYear} = computeGoal();
-  const s = computeAssetStreams();
-  const n = goalSettings.yearsToRetire;
-  const proj = projectStreams(n);
-  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
   const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
   const ms = computeMonthlySavingsNeeded(t.nav);
 
+  // Update output metric cards
   const cards = [
     ['goal-out-nest', fmtK(nestEgg), `at ${goalSettings.swr}% withdrawal`],
-    ['goal-out-nav',  fmtK(t.nav),   `${pct}% of target · ${fmtK(s.investable)} investable`],
-    ['goal-out-proj', fmtK(projTotal), `projected total by ${retireYear}`],
-    ['goal-out-save', ms>0?fmtK(ms):'On track!', ms>0?`to close gap by ${retireYear}`:'no extra savings needed'],
+    ['goal-out-nav',  fmtK(t.nav),   `${pct}% of target`],
+    ['goal-out-save', ms>0?fmtK(ms):'On track!', ms>0?`to close the gap by ${retireYear}`:'no additional savings needed'],
+    ['goal-out-yrs',  goalSettings.yearsToRetire+' yrs', `target year ${retireYear}`],
   ];
   cards.forEach(([id, val, sub])=>{
     const el=document.getElementById(id); if(!el) return;
@@ -1485,50 +1494,13 @@ function _refreshGoalOutputs(){
     el.children[2].textContent=sub;
   });
 
+  // Update progress bar
   const bar=document.getElementById('goal-bar');
   if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>=100?'var(--green)':'var(--blue)'; }
   const barPct=document.getElementById('goal-bar-pct');
   if(barPct){ barPct.textContent=pct+'%'; barPct.style.color=pct>=100?'var(--green)':'var(--text)'; }
   const barLabels=document.getElementById('goal-bar-labels');
-  if(barLabels) barLabels.innerHTML=`<span>${fmtK(t.nav)} now</span><span>${n} yrs · retire ${retireYear}</span><span>${fmtK(nestEgg)} goal</span>`;
-
-  // Update asset stream breakdown
-  const bkdEl=document.getElementById('goal-stream-bkd');
-  if(bkdEl){
-    const ri=goalSettings.annualReturn;
-    bkdEl.innerHTML=`
-      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Asset growth breakdown — projected to ${retireYear}</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px">
-        ${[
-          {lbl:'Investable (stocks+cash)', now:s.investable, proj:proj.inv, rate:ri+'%', col:'var(--blue)'},
-          {lbl:'CPF (OA+SA)', now:s.cpf, proj:proj.cpf, rate:'3% blended', col:'var(--purple)'},
-          {lbl:'Property SG', now:s.propSG, proj:proj.psg, rate:'2% nominal', col:'var(--amber)'},
-          {lbl:'Property TH', now:s.propTH, proj:proj.pth, rate:'1.5%', col:'var(--coral)'},
-          {lbl:'Insurance', now:s.insur, proj:proj.ins, rate:'1.5%', col:'var(--gray)'},
-        ].filter(x=>x.now>1000).map(x=>`
-          <div style="background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px;border-left:3px solid ${x.col}">
-            <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${x.lbl}</div>
-            <div style="font-size:12px;font-weight:600">${fmtK(x.proj)}</div>
-            <div style="font-size:10px;color:var(--text3)">${fmtK(x.now)} → at ${x.rate}</div>
-          </div>`).join('')}
-        <div style="background:rgba(29,158,117,.08);border-radius:var(--radius-sm);padding:8px 10px;border-left:3px solid var(--green)">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">Projected total ${retireYear}</div>
-          <div style="font-size:12px;font-weight:600;color:var(--green)">${fmtK(projTotal)}</div>
-          <div style="font-size:10px;color:var(--text3)">${fmtK(t.nav)} → realistic multi-rate</div>
-        </div>
-      </div>
-      <div style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.6">
-        ⚠ <strong style="color:var(--text)">Only investable assets (${fmtK(s.investable)}) grow at your ${ri}% return.</strong>
-        CPF, property and insurance use conservative fixed rates. This is why the monthly savings figure (${fmtK(ms)}) is ${ms>computeMonthlySavingsNeededNaive(t.nav)?'higher':'lower'} than applying ${ri}% to your full net worth of ${fmtK(t.nav)}.
-      </div>`;
-  }
-}
-
-// Naive version (total nav × one rate) — used only for comparison label
-function computeMonthlySavingsNeededNaive(nav){
-  const {nestEgg}=computeGoal(); const r=goalSettings.annualReturn/100; const n=goalSettings.yearsToRetire;
-  const gf=Math.pow(1+r,n); const gap=Math.max(0,nestEgg-nav*gf); if(gap<=0) return 0;
-  return gap*(r/12)/(gf-1);
+  if(barLabels) barLabels.innerHTML=`<span>${fmtK(t.nav)} now</span><span>${goalSettings.yearsToRetire} yrs · retire ${retireYear}</span><span>${fmtK(nestEgg)} goal</span>`;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1539,9 +1511,6 @@ function renderDashboard(){
   const {nestEgg, retireYear} = computeGoal();
   const yearsLeft = goalSettings.yearsToRetire;
   const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
-  const streams = computeAssetStreams();
-  const proj = projectStreams(yearsLeft);
-  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
   const monthlySavings = computeMonthlySavingsNeeded(t.nav);
   const lastUpdated=stocks.filter(s=>s.lastUpdated).map(s=>s.lastUpdated).sort().pop();
 
@@ -1652,22 +1621,19 @@ function renderDashboard(){
         <div id="goal-out-nav" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Current net worth</div>
           <div style="font-size:18px;font-weight:600;color:var(--blue)">${fmtK(t.nav)}</div>
-          <div style="font-size:11px;color:var(--text3)">${pct}% of target · ${fmtK(streams.investable)} investable</div>
-        </div>
-        <div id="goal-out-proj" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Realistic projection</div>
-          <div style="font-size:18px;font-weight:600;color:${projTotal>=nestEgg?'var(--green)':'var(--amber)'}">${fmtK(projTotal)}</div>
-          <div style="font-size:11px;color:var(--text3)">projected total by ${retireYear}</div>
+          <div style="font-size:11px;color:var(--text3)">${pct}% of target</div>
         </div>
         <div id="goal-out-save" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Save monthly</div>
           <div style="font-size:18px;font-weight:600;color:${monthlySavings>0?'var(--amber)':'var(--green)'}">${monthlySavings>0?fmtK(monthlySavings):'On track!'}</div>
-          <div style="font-size:11px;color:var(--text3)">${monthlySavings>0?'to close gap by '+retireYear:'no additional savings needed'}</div>
+          <div style="font-size:11px;color:var(--text3)">${monthlySavings>0?'to close the gap by '+retireYear:'no additional savings needed'}</div>
+        </div>
+        <div id="goal-out-yrs" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Retire in</div>
+          <div style="font-size:18px;font-weight:600;color:var(--text)">${yearsLeft} yrs</div>
+          <div style="font-size:11px;color:var(--text3)">target year ${retireYear}</div>
         </div>
       </div>
-
-      <!-- Asset stream breakdown -->
-      <div id="goal-stream-bkd" style="margin-bottom:14px"></div>
 
       <!-- Progress bar -->
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
@@ -1929,14 +1895,8 @@ function deleteAllSnapshots(){
 // ════════════════════════════════════════════════════════════════════
 // EXPORT / IMPORT
 // ════════════════════════════════════════════════════════════════════
-function exportData(){
-  const data=JSON.stringify({stocks,assets,snapshots,exportedAt:new Date().toISOString()},null,2);
-  const blob=new Blob([data],{type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url; a.download='finance-backup-'+todayStr()+'.json'; a.click();
-  URL.revokeObjectURL(url);
-}
+
+
 function importData(){
   const inp=document.createElement('input');
   inp.type='file'; inp.accept='.json';
@@ -2900,30 +2860,21 @@ if('serviceWorker' in navigator){
       });
     });
   }).catch(()=>{});
-  // NO auto-reload on controllerchange — caused the flash-and-disappear loop.
-  // Reload is triggered manually only when user clicks "Update now".
+  navigator.serviceWorker.addEventListener('controllerchange',()=>window.location.reload());
 }
 function showUpdateBanner(){
-  if(document.getElementById('update-banner')) return;
+  const existing=document.getElementById('update-banner'); if(existing) return;
   const b=document.createElement('div');
   b.id='update-banner';
-  b.style.cssText='position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1a1a18;color:#f0ede8;padding:14px 20px;border-radius:12px;display:flex;align-items:center;gap:12px;font-size:13px;z-index:9999;box-shadow:0 6px 28px rgba(0,0,0,.5);white-space:nowrap;border:0.5px solid rgba(255,255,255,.12)';
-  b.innerHTML=`<span>🆕 New version available</span>
-    <button onclick="applyUpdate()" style="background:#1D9E75;color:white;border:none;border-radius:6px;padding:6px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit">Update now</button>
-    <button onclick="document.getElementById('update-banner').remove()" style="background:transparent;border:none;color:#9a9a96;font-size:20px;cursor:pointer;line-height:1;padding:0 4px">×</button>`;
+  b.style.cssText='position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#1a1a18;color:#f0ede8;padding:12px 18px;border-radius:10px;display:flex;align-items:center;gap:12px;font-size:13px;z-index:999;box-shadow:0 4px 20px rgba(0,0,0,.3);white-space:nowrap';
+  b.innerHTML=`<span>🆕 New version available</span><button onclick="applyUpdate()" style="background:#1D9E75;color:white;border:none;border-radius:6px;padding:5px 12px;font-size:13px;cursor:pointer;font-family:inherit">Update now</button><button onclick="this.parentElement.remove()" style="background:transparent;border:none;color:#9a9a96;font-size:18px;cursor:pointer;line-height:1">×</button>`;
   document.body.appendChild(b);
 }
 function applyUpdate(){
-  const b=document.getElementById('update-banner');
-  if(b){const btn=b.querySelector('button');if(btn){btn.textContent='Updating…';btn.disabled=true;}}
   if('serviceWorker' in navigator){
     navigator.serviceWorker.getRegistration().then(reg=>{
-      if(reg&&reg.waiting){
-        navigator.serviceWorker.addEventListener('controllerchange',()=>window.location.reload(),{once:true});
-        reg.waiting.postMessage('skipWaiting');
-      } else {
-        window.location.reload();
-      }
+      if(reg&&reg.waiting) reg.waiting.postMessage('skipWaiting');
+      else window.location.reload();
     });
   } else window.location.reload();
 }
