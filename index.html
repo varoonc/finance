@@ -286,17 +286,74 @@ function computeGoal(){
   return { nestEgg, retireYear };
 }
 
-// Monthly savings needed to close the gap
+// ── Two-stream retirement projection ─────────────────────────────────
+// Investable assets (stocks + cash) grow at annualReturn %.
+// Locked assets grow at their own slower fixed rates:
+//   CPF OA: 2.5%, CPF SA: 4%, Property: 2% nominal, Insurance: 1.5%
+// This gives a far more realistic picture than applying one rate to total nav.
+
+function computeAssetStreams(){
+  const t = computeTotals();
+  let cpf=0, propSG=0, propTH=0, insur=0;
+  assets.forEach(a=>{
+    if(a.isLiability) return;
+    const v = getAssetValueSGD(a);
+    const cat = a.category;
+    const name = (a.name||'').toLowerCase();
+    if(cat==='CPF') cpf += v;
+    else if(cat==='Property'){
+      if(a.origCurrency==='THB'||name.includes('lpn')||name.includes('klong')) propTH+=v;
+      else propSG+=v;
+    }
+    else if(cat==='Insurance') insur+=v;
+  });
+  const investable = t.stockValSGD + (t.nav - t.stockValSGD - cpf - propSG - propTH - insur - t.totalLiab > 0
+    ? t.nav - t.stockValSGD - cpf - propSG - propTH - insur - t.totalLiab : 0);
+  // Cash = nav minus stocks, CPF, property, insurance, liabilities
+  const cash = Math.max(0, t.nav - t.stockValSGD - cpf - propSG - propTH - insur);
+  return {
+    investable: t.stockValSGD + cash,  // stocks + all cash — grows at annualReturn
+    cpf,          // grows at ~3% blended (OA 2.5%, SA 4%)
+    propSG,       // grows at ~2% nominal (Singapore property long run)
+    propTH,       // grows at ~1.5% nominal (Thai property, discounted for illiquidity)
+    insur,        // grows at ~1.5% (fixed maturity schedule)
+    liab: t.totalLiab,
+    nav: t.nav,
+  };
+}
+
+function projectStreams(years){
+  const s = computeAssetStreams();
+  const ri = goalSettings.annualReturn / 100;  // investable: user-set rate
+  const rc = 0.03;   // CPF blended
+  const rp = 0.02;   // Property SG
+  const rt = 0.015;  // Property TH
+  const rn = 0.015;  // Insurance
+  const inv = s.investable * Math.pow(1+ri, years);
+  const cpf = s.cpf     * Math.pow(1+rc, years);
+  const psg = s.propSG  * Math.pow(1+rp, years);
+  const pth = s.propTH  * Math.pow(1+rt, years);
+  const ins = s.insur   * Math.pow(1+rn, years);
+  return { inv, cpf, psg, pth, ins, liab: s.liab };
+}
+
+// Monthly savings needed — applied only to investable portion
 function computeMonthlySavingsNeeded(nav){
   const {nestEgg} = computeGoal();
   const r = goalSettings.annualReturn / 100;
   const n = goalSettings.yearsToRetire;
-  const growthFactor = Math.pow(1 + r, n);
-  const currentGrown = nav * growthFactor;
-  const gap = Math.max(0, nestEgg - currentGrown);
+  const s = computeAssetStreams();
+
+  // Project each stream forward
+  const proj = projectStreams(n);
+  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
+  const gap = Math.max(0, nestEgg - projTotal);
   if(gap <= 0) return 0;
+
+  // Savings go into investable assets, so FV uses investable return rate
   const monthlyRate = r / 12;
   const months = n * 12;
+  const growthFactor = Math.pow(1 + r, n);
   if(r < 0.0001) return gap / months;
   return gap * monthlyRate / (growthFactor - 1);
 }
@@ -597,10 +654,11 @@ function yahooSymbol(st) {
   return st.ticker; // US stocks use ticker as-is
 }
 
-// Known ticker name overrides — only needed for tickers where Yahoo consistently
-// returns the WRONG company name (not just fails to return one).
-// For missing names, the app now auto-retries name lookup independently.
-const TICKER_NAME_LOCK = {};
+// Known ticker name overrides — for tickers where Yahoo returns wrong/abbreviated name via proxy
+const TICKER_NAME_LOCK = {
+  'BUOU': 'Frasers Logistics & Commercial Trust',
+  'N2IU': 'Mapletree Pan Asia Commercial Trust',
+};
 
 // Try Yahoo v8 chart endpoint
 async function tryYahooProxy(proxyFn, symbol) {
@@ -709,9 +767,10 @@ function applyQuote(id, q) {
   // Also update if current name still equals the ticker (was never resolved)
   if (!stocks[i].nameLocked) {
     if (TICKER_NAME_LOCK[stocks[i].ticker]) {
+      // Hardcoded override always wins (for tickers with known proxy naming issues)
       stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
-    } else if (q.longName && q.longName !== stocks[i].ticker && q.longName !== yahooSymbol(stocks[i])) {
-      // Got a real name from API — always apply it
+    } else if (q.longName && q.longName !== stocks[i].ticker) {
+      // Accept any name that isn't just the ticker itself
       stocks[i].companyName = q.longName;
     }
   }
@@ -720,18 +779,21 @@ function applyQuote(id, q) {
 // Resolve company name for stocks where name still equals the ticker symbol.
 // Uses Yahoo search — lightweight, works even when price fetch fails.
 async function fetchNameOnly(st) {
+  // Check hardcoded override first
+  if (TICKER_NAME_LOCK[st.ticker]) return TICKER_NAME_LOCK[st.ticker];
+
   const symbol = yahooSymbol(st);
   try {
-    // Try v7 quote first — returns name along with price
     for (let pi = 0; pi < PROXIES.length; pi++) {
       try {
         const q = await tryYahooV7(PROXIES[pi], symbol);
-        if (q.longName && q.longName !== st.ticker && q.longName !== symbol) {
+        // Accept any name that isn't just the raw ticker symbol
+        if (q.longName && q.longName !== st.ticker) {
           return q.longName;
         }
       } catch(e) {}
     }
-    // Fallback: use search endpoint — name-only, no price needed
+    // Fallback: search endpoint
     const results = await searchYahoo(symbol);
     const match = results.find(r =>
       r.symbol === symbol ||
@@ -1193,13 +1255,10 @@ function buildTrendChart(snaps, chartId='trendChart'){
     xl+=`<text x="${tx(i).toFixed(1)}" y="${H-PB+14}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.date}</text>`;
   });
 
-  // Large invisible hit-area circles so hover is easy to trigger
   let dots='';
   snaps.forEach((s,i)=>{
-    // Visible dots
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.nav).toFixed(1)}" r="4" fill="var(--blue)" pointer-events="none"/>`;
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${ty(s.totalAssets).toFixed(1)}" r="3" fill="var(--green)" pointer-events="none"/>`;
-    // Large transparent hit area centred between the two dots — catches hover anywhere near either
     const midY=((ty(s.nav)+ty(s.totalAssets))/2).toFixed(1);
     dots+=`<circle cx="${tx(i).toFixed(1)}" cy="${midY}" r="18" fill="transparent" style="cursor:pointer"
       onmouseenter="showChartTip('${chartId}',${i},this)"
@@ -1211,11 +1270,10 @@ function buildTrendChart(snaps, chartId='trendChart'){
   <div style="display:flex;flex-wrap:wrap;gap:7px 13px;margin-bottom:9px;font-size:12px;color:var(--text2)">
     <span style="display:flex;align-items:center;gap:5px"><span style="width:16px;height:2px;background:var(--blue);display:inline-block"></span>Net worth</span>
     <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--green)" stroke-width="2" stroke-dasharray="4 2"/></svg>Total assets</span>
-    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>$3M goal</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>${fmtK(nestEgg)} goal</span>
     <span style="color:var(--text3);margin-left:4px">· hover or click dots for details</span>
   </div>
   <div style="position:relative">
-    <!-- Floating hover tooltip — stays visible when mouse moves over it -->
     <div id="${chartId}-tip"
       style="display:none;position:absolute;background:var(--bg);border:0.5px solid var(--border2);border-radius:var(--radius-sm);padding:8px 10px;font-size:11px;z-index:20;box-shadow:0 4px 16px rgba(0,0,0,.12);min-width:170px;pointer-events:auto;"
       onmouseenter="cancelHideTip('${chartId}')"
@@ -1228,8 +1286,125 @@ function buildTrendChart(snaps, chartId='trendChart'){
       ${dots}${xl}
     </svg>
   </div>
-  <!-- Click-to-expand detail panel below chart -->
   <div id="${chartId}-detail" style="display:none;margin-top:10px;border-top:0.5px solid var(--border);padding-top:10px;"></div>`;
+}
+
+// ── Projection chart — separate from history, 10-year x-axis ──────────
+function buildProjectionChart(){
+  const {nestEgg, retireYear} = computeGoal();
+  const r = goalSettings.annualReturn / 100;
+  const latestNav = snapshots.length ? snapshots[snapshots.length-1].nav : 0;
+  const monthlySavings = computeMonthlySavingsNeeded(latestNav);
+
+  const W=580, H=180, PL=64, PR=30, PT=14, PB=36;
+  const gW=W-PL-PR, gH=H-PT-PB;
+
+  // Build yearly projection points from today to retireYear
+  const yearsLeft = goalSettings.yearsToRetire;
+  const monthsLeft = yearsLeft * 12;
+  const steps = yearsLeft; // one point per year
+
+  // Two-stream model: investable at portfolio rate, locked at own rates
+  const s = computeAssetStreams();
+  const ri = r;
+  const projPoints=[], reqPoints=[];
+
+  for(let i=0; i<=steps; i++){
+    const yrs = (i/steps)*yearsLeft;
+    const months = yrs * 12;
+    const gfi = Math.pow(1+ri/12, months);
+    // Investable: grows at portfolio rate + monthly savings
+    const invProj = s.investable*gfi + (ri>0.0001 ? monthlySavings*(gfi-1)/(ri/12) : monthlySavings*months);
+    // Locked assets grow at their own conservative rates
+    const cpfP = s.cpf    * Math.pow(1.03,  yrs);
+    const psgP = s.propSG * Math.pow(1.02,  yrs);
+    const pthP = s.propTH * Math.pow(1.015, yrs);
+    const insP = s.insur  * Math.pow(1.015, yrs);
+    const projNav = invProj + cpfP + psgP + pthP + insP - s.liab;
+    // Required: PV of nestEgg discounted from retire date at investable return rate
+    const remainMonths = monthsLeft - months;
+    const reqNav = nestEgg / Math.pow(1+ri/12, remainMonths);
+    projPoints.push({x:i, y:projNav});
+    reqPoints.push({x:i, y:reqNav});
+  }
+
+  const allY=[...projPoints.map(p=>p.y),...reqPoints.map(p=>p.y),nestEgg,latestNav,0];
+  const minV=Math.min(0,...allY);
+  const maxV=Math.max(...allY);
+  const rng=maxV-minV||1;
+
+  const tx=i=>PL+(i/steps)*gW;
+  const ty=v=>PT+gH-((v-minV)/rng)*gH;
+
+  // Grid + Y labels
+  let grid='',yl='';
+  [0,.25,.5,.75,1].forEach(t=>{
+    const v=minV+t*rng, y=ty(v).toFixed(1);
+    grid+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+    yl+=`<text x="${PL-6}" y="${(+y+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;
+  });
+
+  // X labels: yearly
+  let xl='';
+  const CURRENT_YEAR2 = new Date().getFullYear();
+  for(let i=0; i<=steps; i++){
+    if(steps<=10 || i%2===0 || i===steps){
+      xl+=`<text x="${tx(i).toFixed(1)}" y="${H-PB+14}" text-anchor="middle" font-size="9" fill="var(--text3)">${CURRENT_YEAR2+i}</text>`;
+    }
+  }
+
+  // Paths
+  const projPath=projPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`).join('L');
+  const reqPath =reqPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`).join('L');
+  const goalY=ty(nestEgg).toFixed(1);
+
+  // "Today" dot (leftmost point = current nav)
+  const todayNav = computeTotals().nav;
+  const todayX=tx(0).toFixed(1), todayY=ty(todayNav).toFixed(1);
+
+  // Ahead/behind at year 0 (now)
+  const reqNow=reqPoints[0].y;
+  const ahead=todayNav>=reqNow;
+  const statusText=ahead
+    ? `▲ Ahead of required pace`
+    : `▼ Behind required pace by ${fmtK(reqNow-todayNav)}`;
+  const statusCol=ahead?'var(--green)':'var(--red)';
+
+  // Shaded area between proj and req curves
+  const fillPts=[...projPoints.map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`),
+                 ...[...reqPoints].reverse().map(p=>`${tx(p.x).toFixed(1)},${ty(p.y).toFixed(1)}`)]
+    .join('L');
+  const fillCol=ahead?'rgba(29,158,117,0.07)':'rgba(226,75,74,0.07)';
+
+  return `
+  <div style="display:flex;flex-wrap:wrap;gap:7px 13px;margin-bottom:6px;font-size:12px;color:var(--text2)">
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="#1baf7a" stroke-width="2" stroke-dasharray="6 2"/></svg>Projected growth</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--amber)" stroke-width="2" stroke-dasharray="3 2"/></svg>Required pace</span>
+    <span style="display:flex;align-items:center;gap:5px"><svg width="16" height="8"><line x1="0" y1="4" x2="16" y2="4" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 3"/></svg>${fmtK(nestEgg)} goal</span>
+    <span style="margin-left:auto;font-size:11px;color:${statusCol};font-weight:500">${statusText}</span>
+  </div>
+  <div style="font-size:11px;color:var(--text3);margin-bottom:8px">
+    Investable assets (${fmtK(s.investable)}) grow at ${goalSettings.annualReturn}% · CPF at 3% · Property at 2% · Monthly savings ${fmtK(monthlySavings)} added to investable
+  </div>
+  <div style="position:relative">
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+      ${grid}${yl}
+      <!-- Goal line -->
+      <line x1="${PL}" y1="${goalY}" x2="${W-PR}" y2="${goalY}" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="4 3"/>
+      <!-- Shaded gap between proj and required -->
+      <path d="M${fillPts}Z" fill="${fillCol}"/>
+      <!-- Required pace -->
+      <path d="M${reqPath}" fill="none" stroke="var(--amber)" stroke-width="2" stroke-dasharray="3 2" stroke-linejoin="round"/>
+      <!-- Projected growth -->
+      <path d="M${projPath}" fill="none" stroke="#1baf7a" stroke-width="2" stroke-dasharray="6 2" stroke-linejoin="round"/>
+      <!-- Today marker -->
+      <circle cx="${todayX}" cy="${todayY}" r="5" fill="var(--blue)" stroke="var(--bg)" stroke-width="2"/>
+      <text x="${(+todayX+8).toFixed(1)}" y="${(+todayY+4).toFixed(1)}" font-size="9" fill="var(--blue)">Today ${fmtK(todayNav)}</text>
+      <!-- Retire year marker -->
+      <circle cx="${tx(steps).toFixed(1)}" cy="${ty(nestEgg).toFixed(1)}" r="4" fill="var(--red)" stroke="var(--bg)" stroke-width="2"/>
+      ${xl}
+    </svg>
+  </div>`;
 }
 
 // Tip hide timer — delayed so cursor can move from dot to tooltip
@@ -1420,15 +1595,18 @@ function updateGoal(key, val){
 function _refreshGoalOutputs(){
   const t = computeTotals();
   const {nestEgg, retireYear} = computeGoal();
+  const s = computeAssetStreams();
+  const n = goalSettings.yearsToRetire;
+  const proj = projectStreams(n);
+  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
   const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
   const ms = computeMonthlySavingsNeeded(t.nav);
 
-  // Update output metric cards
   const cards = [
     ['goal-out-nest', fmtK(nestEgg), `at ${goalSettings.swr}% withdrawal`],
-    ['goal-out-nav',  fmtK(t.nav),   `${pct}% of target`],
-    ['goal-out-save', ms>0?fmtK(ms):'On track!', ms>0?`to close the gap by ${retireYear}`:'no additional savings needed'],
-    ['goal-out-yrs',  goalSettings.yearsToRetire+' yrs', `target year ${retireYear}`],
+    ['goal-out-nav',  fmtK(t.nav),   `${pct}% of target · ${fmtK(s.investable)} investable`],
+    ['goal-out-proj', fmtK(projTotal), `projected total by ${retireYear}`],
+    ['goal-out-save', ms>0?fmtK(ms):'On track!', ms>0?`to close gap by ${retireYear}`:'no extra savings needed'],
   ];
   cards.forEach(([id, val, sub])=>{
     const el=document.getElementById(id); if(!el) return;
@@ -1436,13 +1614,50 @@ function _refreshGoalOutputs(){
     el.children[2].textContent=sub;
   });
 
-  // Update progress bar
   const bar=document.getElementById('goal-bar');
   if(bar){ bar.style.width=pct+'%'; bar.style.background=pct>=100?'var(--green)':'var(--blue)'; }
   const barPct=document.getElementById('goal-bar-pct');
   if(barPct){ barPct.textContent=pct+'%'; barPct.style.color=pct>=100?'var(--green)':'var(--text)'; }
   const barLabels=document.getElementById('goal-bar-labels');
-  if(barLabels) barLabels.innerHTML=`<span>${fmtK(t.nav)} now</span><span>${goalSettings.yearsToRetire} yrs · retire ${retireYear}</span><span>${fmtK(nestEgg)} goal</span>`;
+  if(barLabels) barLabels.innerHTML=`<span>${fmtK(t.nav)} now</span><span>${n} yrs · retire ${retireYear}</span><span>${fmtK(nestEgg)} goal</span>`;
+
+  // Update asset stream breakdown
+  const bkdEl=document.getElementById('goal-stream-bkd');
+  if(bkdEl){
+    const ri=goalSettings.annualReturn;
+    bkdEl.innerHTML=`
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em">Asset growth breakdown — projected to ${retireYear}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px">
+        ${[
+          {lbl:'Investable (stocks+cash)', now:s.investable, proj:proj.inv, rate:ri+'%', col:'var(--blue)'},
+          {lbl:'CPF (OA+SA)', now:s.cpf, proj:proj.cpf, rate:'3% blended', col:'var(--purple)'},
+          {lbl:'Property SG', now:s.propSG, proj:proj.psg, rate:'2% nominal', col:'var(--amber)'},
+          {lbl:'Property TH', now:s.propTH, proj:proj.pth, rate:'1.5%', col:'var(--coral)'},
+          {lbl:'Insurance', now:s.insur, proj:proj.ins, rate:'1.5%', col:'var(--gray)'},
+        ].filter(x=>x.now>1000).map(x=>`
+          <div style="background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px;border-left:3px solid ${x.col}">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${x.lbl}</div>
+            <div style="font-size:12px;font-weight:600">${fmtK(x.proj)}</div>
+            <div style="font-size:10px;color:var(--text3)">${fmtK(x.now)} → at ${x.rate}</div>
+          </div>`).join('')}
+        <div style="background:rgba(29,158,117,.08);border-radius:var(--radius-sm);padding:8px 10px;border-left:3px solid var(--green)">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">Projected total ${retireYear}</div>
+          <div style="font-size:12px;font-weight:600;color:var(--green)">${fmtK(projTotal)}</div>
+          <div style="font-size:10px;color:var(--text3)">${fmtK(t.nav)} → realistic multi-rate</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.6">
+        ⚠ <strong style="color:var(--text)">Only investable assets (${fmtK(s.investable)}) grow at your ${ri}% return.</strong>
+        CPF, property and insurance use conservative fixed rates. This is why the monthly savings figure (${fmtK(ms)}) is ${ms>computeMonthlySavingsNeededNaive(t.nav)?'higher':'lower'} than applying ${ri}% to your full net worth of ${fmtK(t.nav)}.
+      </div>`;
+  }
+}
+
+// Naive version (total nav × one rate) — used only for comparison label
+function computeMonthlySavingsNeededNaive(nav){
+  const {nestEgg}=computeGoal(); const r=goalSettings.annualReturn/100; const n=goalSettings.yearsToRetire;
+  const gf=Math.pow(1+r,n); const gap=Math.max(0,nestEgg-nav*gf); if(gap<=0) return 0;
+  return gap*(r/12)/(gf-1);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1453,6 +1668,9 @@ function renderDashboard(){
   const {nestEgg, retireYear} = computeGoal();
   const yearsLeft = goalSettings.yearsToRetire;
   const pct = Math.min(100, Math.round(t.nav / nestEgg * 100));
+  const streams = computeAssetStreams();
+  const proj = projectStreams(yearsLeft);
+  const projTotal = proj.inv + proj.cpf + proj.psg + proj.pth + proj.ins - proj.liab;
   const monthlySavings = computeMonthlySavingsNeeded(t.nav);
   const lastUpdated=stocks.filter(s=>s.lastUpdated).map(s=>s.lastUpdated).sort().pop();
 
@@ -1563,19 +1781,22 @@ function renderDashboard(){
         <div id="goal-out-nav" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Current net worth</div>
           <div style="font-size:18px;font-weight:600;color:var(--blue)">${fmtK(t.nav)}</div>
-          <div style="font-size:11px;color:var(--text3)">${pct}% of target</div>
+          <div style="font-size:11px;color:var(--text3)">${pct}% of target · ${fmtK(streams.investable)} investable</div>
+        </div>
+        <div id="goal-out-proj" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
+          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Realistic projection</div>
+          <div style="font-size:18px;font-weight:600;color:${projTotal>=nestEgg?'var(--green)':'var(--amber)'}">${fmtK(projTotal)}</div>
+          <div style="font-size:11px;color:var(--text3)">projected total by ${retireYear}</div>
         </div>
         <div id="goal-out-save" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
           <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Save monthly</div>
           <div style="font-size:18px;font-weight:600;color:${monthlySavings>0?'var(--amber)':'var(--green)'}">${monthlySavings>0?fmtK(monthlySavings):'On track!'}</div>
-          <div style="font-size:11px;color:var(--text3)">${monthlySavings>0?'to close the gap by '+retireYear:'no additional savings needed'}</div>
-        </div>
-        <div id="goal-out-yrs" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px 12px">
-          <div style="font-size:11px;color:var(--text3);margin-bottom:3px">Retire in</div>
-          <div style="font-size:18px;font-weight:600;color:var(--text)">${yearsLeft} yrs</div>
-          <div style="font-size:11px;color:var(--text3)">target year ${retireYear}</div>
+          <div style="font-size:11px;color:var(--text3)">${monthlySavings>0?'to close gap by '+retireYear:'no additional savings needed'}</div>
         </div>
       </div>
+
+      <!-- Asset stream breakdown -->
+      <div id="goal-stream-bkd" style="margin-bottom:14px"></div>
 
       <!-- Progress bar -->
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
