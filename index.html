@@ -251,10 +251,12 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
   <input type="number" id="edit-units" min="0" step="any" style="margin-bottom:12px;">
   <label>Company name <span style="color:var(--text3);font-weight:400">(edit to override auto-fetch)</span></label>
   <input type="text" id="edit-company" style="margin-bottom:4px;">
-  <label style="display:flex;align-items:center;gap:7px;margin-bottom:14px;cursor:pointer;font-size:12px;">
+  <label style="display:flex;align-items:center;gap:7px;margin-bottom:12px;cursor:pointer;font-size:12px;">
     <input type="checkbox" id="edit-lock-name" style="width:auto;margin:0;">
     Lock name — don't overwrite on refresh
   </label>
+  <label>Manual price override <span style="color:var(--text3);font-weight:400">(leave blank to use auto-fetch)</span></label>
+  <input type="number" id="edit-price" min="0" step="any" placeholder="e.g. 0.985 — only needed if auto-fetch fails" style="margin-bottom:14px;">
   <div class="modal-btns">
     <button class="btn btn-primary" style="flex:1" onclick="submitEditStock()">Save</button>
     <button class="btn btn-danger" onclick="deleteStockConfirm()">Remove</button>
@@ -592,32 +594,55 @@ const SEED_ASSETS=[
 // Rotates through proxies, retries failed tickers, adds jitter delay
 // to avoid rate-limiting. Google Finance scraped as last-resort fallback.
 
+// ── CORS Proxy list ───────────────────────────────────────────────────
+// allorigins: works from any origin including file://, ~20 req/min
+// corsproxy.io: works on github.io & localhost (not file://), 10K req/month
+// codetabs: works most origins, 5 req/sec
+// cors.x2u.in: 100 req/hour, good overflow
 const PROXIES = [
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  { fn: url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`, origins: 'any' },
+  { fn: url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,          origins: 'https' },
+  { fn: url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`, origins: 'any' },
+  { fn: url => `https://cors.x2u.in/${encodeURIComponent(url)}`,                origins: 'https' },
 ];
+
+// Detect if running from file:// — corsproxy.io and cors.x2u.in reject file:// origins
+const IS_FILE_ORIGIN = location.protocol === 'file:';
+
+// Filter to proxies that work in the current environment
+function getAvailableProxies() {
+  return PROXIES
+    .filter(p => p.origins === 'any' || !IS_FILE_ORIGIN)
+    .map(p => p.fn);
+}
+
+// ── Per-proxy health tracking ─────────────────────────────────────────
+const _proxyHealth = PROXIES.map(() => ({ fails: 0, lastFail: 0 }));
+
+function getHealthyProxies() {
+  const now = Date.now();
+  const available = getAvailableProxies();
+  return available
+    .map((fn, localIdx) => {
+      // Map back to global index for health tracking
+      const globalIdx = PROXIES.findIndex(p => p.fn === fn);
+      return { fn, i: globalIdx, h: _proxyHealth[globalIdx] };
+    })
+    .filter(({ h }) => h.fails < 3 || (now - h.lastFail) > 60000)
+    .sort((a, b) => a.h.fails - b.h.fails);
+}
+
+function markProxyFailed(i) {
+  _proxyHealth[i].fails++;
+  _proxyHealth[i].lastFail = Date.now();
+}
+
+function markProxyOk(i) {
+  _proxyHealth[i].fails = Math.max(0, _proxyHealth[i].fails - 1);
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Cross-browser fetch with timeout.
-// Cache-busting is added to the PROXY wrapper URL only — Yahoo rejects unknown
-// params and returns stale data when they appear in the Yahoo URL itself.
-function fetchWithDeadline(url, ms=6000) {
-  // Bust the browser/proxy cache by making each proxy URL unique
-  const bust = `_t=${Date.now()}`;
-  const bustUrl = url.includes('?') ? `${url}&${bust}` : `${url}?${bust}`;
-  return Promise.race([
-    fetch(bustUrl),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
-  ]);
-}
-
-// Wrap a Yahoo URL in a proxy with cache-busting.
-// The _b timestamp is embedded INSIDE the Yahoo URL so allorigins sees a
-// unique ?url= value each time — defeating its caching layer.
-// NOTE: Only use bustingProxyWrap for price/chart APIs — Yahoo's search
-// endpoint rejects unknown parameters and returns empty results.
 function proxyWrap(proxyFn, yahooUrl, ms=6000) {
   const bust = `&_b=${Date.now()}`;
   const bustYahooUrl = yahooUrl + bust;
@@ -628,15 +653,54 @@ function proxyWrap(proxyFn, yahooUrl, ms=6000) {
   ]);
 }
 
-// Plain proxy wrap WITHOUT cache-busting — for search endpoint which rejects unknown params
 function proxyWrapSearch(proxyFn, yahooUrl, ms=6000) {
   const proxied = proxyFn(yahooUrl);
-  // Add bust on the proxy URL itself (not inside Yahoo URL) — less effective but harmless
   const bustProxy = proxied + (proxied.includes('?') ? '&' : '?') + `_t=${Date.now()}`;
   return Promise.race([
     fetch(bustProxy),
     new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), ms))
   ]);
+}
+
+// ── Batch quote fetch — fetch up to 10 symbols in ONE request ─────────
+// This is the key optimisation: 29 stocks → 3 batch requests instead of 29 individual ones
+async function fetchQuoteBatch(symbols) {
+  const fields = 'regularMarketPrice,regularMarketPreviousClose,postMarketPrice,longName,shortName,currency';
+  const symbolStr = symbols.join(',');
+  const healthyProxies = getHealthyProxies();
+
+  for (const { fn, i } of healthyProxies) {
+    for (const host of ['query1', 'query2']) {
+      try {
+        const yahooUrl = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbolStr)}&fields=${fields}`;
+        const r = await proxyWrap(fn, yahooUrl, 8000);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const text = await r.text();
+        if (!text || text[0] === '<') throw new Error('Blocked');
+        const d = JSON.parse(text);
+        const results = d?.quoteResponse?.result;
+        if (!results || results.length === 0) throw new Error('Empty');
+        markProxyOk(i);
+        const map = {};
+        results.forEach(q => {
+          if (q.regularMarketPrice) {
+            const prev = q.regularMarketPreviousClose;
+            map[q.symbol] = {
+              price: q.postMarketPrice || q.regularMarketPrice,
+              change: prev ? ((q.regularMarketPrice - prev) / prev * 100) : null,
+              currency: q.currency || 'USD',
+              longName: q.longName || q.shortName || q.symbol,
+              source: 'Yahoo',
+            };
+          }
+        });
+        return map;
+      } catch(e) {
+        markProxyFailed(i);
+      }
+    }
+  }
+  return {};
 }
 
 function yahooSymbol(st) {
@@ -743,13 +807,11 @@ async function tryGoogleFinance(st) {
   throw new Error('Google also failed');
 }
 
-// Fetch a single quote — tries v7 first (most accurate current price),
-// then v8 chart as fallback, then Google as last resort
 async function fetchQuote(st) {
   const symbol = yahooSymbol(st);
-  for (let pi = 0; pi < PROXIES.length; pi++) {
-    try { return await tryYahooV7(PROXIES[pi], symbol); } catch(e) {}
-    try { return await tryYahooProxy(PROXIES[pi], symbol); } catch(e) {}
+  for (const { fn, i } of getHealthyProxies()) {
+    try { const q = await tryYahooV7(fn, symbol); markProxyOk(i); return q; } catch(e) { markProxyFailed(i); }
+    try { const q = await tryYahooProxy(fn, symbol); markProxyOk(i); return q; } catch(e) {}
   }
   try { return await tryGoogleFinance(st); } catch(e) {}
   throw new Error('All sources failed for ' + st.ticker);
@@ -759,18 +821,18 @@ async function fetchQuote(st) {
 function applyQuote(id, q) {
   const i = stocks.findIndex(x => x.id === id);
   if (i < 0) return;
-  stocks[i].lastPrice = q.price;
-  stocks[i].lastChange = q.change;
-  stocks[i].lastUpdated = new Date().toISOString();
-  stocks[i].priceSource = q.source;
-  // Name update: update if not user-locked AND (hardcoded override exists OR API returned a real name)
-  // Also update if current name still equals the ticker (was never resolved)
+  // Only update price fields if we got a real non-zero price
+  // This preserves manual prices when auto-fetch fails
+  if (q.price && q.price > 0) {
+    stocks[i].lastPrice = q.price;
+    stocks[i].lastChange = q.change;
+    stocks[i].lastUpdated = new Date().toISOString();
+    stocks[i].priceSource = q.source || 'Yahoo';
+  }
   if (!stocks[i].nameLocked) {
     if (TICKER_NAME_LOCK[stocks[i].ticker]) {
-      // Hardcoded override always wins (for tickers with known proxy naming issues)
       stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
     } else if (q.longName && q.longName !== stocks[i].ticker) {
-      // Accept any name that isn't just the ticker itself
       stocks[i].companyName = q.longName;
     }
   }
@@ -779,27 +841,19 @@ function applyQuote(id, q) {
 // Resolve company name for stocks where name still equals the ticker symbol.
 // Uses Yahoo search — lightweight, works even when price fetch fails.
 async function fetchNameOnly(st) {
-  // Check hardcoded override first
   if (TICKER_NAME_LOCK[st.ticker]) return TICKER_NAME_LOCK[st.ticker];
-
   const symbol = yahooSymbol(st);
   try {
-    for (let pi = 0; pi < PROXIES.length; pi++) {
+    for (const { fn } of getHealthyProxies()) {
       try {
-        const q = await tryYahooV7(PROXIES[pi], symbol);
-        // Accept any name that isn't just the raw ticker symbol
-        if (q.longName && q.longName !== st.ticker) {
-          return q.longName;
-        }
+        const q = await tryYahooV7(fn, symbol);
+        if (q.longName && q.longName !== st.ticker) return q.longName;
       } catch(e) {}
     }
-    // Fallback: search endpoint
     const results = await searchYahoo(symbol);
     const match = results.find(r =>
-      r.symbol === symbol ||
-      r.symbol === st.ticker ||
-      r.symbol === st.ticker + '.SI' ||
-      r.symbol === st.ticker + '.BK'
+      r.symbol === symbol || r.symbol === st.ticker ||
+      r.symbol === st.ticker + '.SI' || r.symbol === st.ticker + '.BK'
     );
     if (match) return match.longname || match.shortname || null;
   } catch(e) {}
@@ -807,78 +861,95 @@ async function fetchNameOnly(st) {
 }
 async function refreshAllPrices(forceAll=false) {
   const btn = document.getElementById('refreshBtn');
-  if (!btn) return;
-  btn.disabled = true;
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Fetching…'; }
 
-  const missing = stocks.filter(s => !s.lastPrice);
-  // Force-refresh all when user explicitly clicks; only fetch missing on auto-load
-  const toFetch = (forceAll || missing.length === 0) ? [...stocks] : missing;
-  const total = toFetch.length;
-  let done = 0;
+  const toFetch = (forceAll || stocks.every(s => s.lastPrice))
+    ? [...stocks]
+    : stocks.filter(s => !s.lastPrice || s.priceSource === 'Manual');
+
+  // ── PHASE 1: Batch fetch — up to 10 symbols per request ──────────
+  const BATCH_SIZE = 10;
   const failed = [];
-  const BATCH = 4;         // slightly smaller batch — more polite on mobile networks
-  const STOCK_TIMEOUT = 12000; // longer timeout for slower mobile connections
-
-  btn.textContent = `↻ 0/${total}`;
-
-  async function fetchWithTimeout(st) {
-    return Promise.race([
-      fetchQuote(st),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), STOCK_TIMEOUT))
-    ]);
+  const batches = [];
+  for (let i = 0; i < toFetch.length; i += BATCH_SIZE) {
+    batches.push(toFetch.slice(i, i + BATCH_SIZE));
   }
 
-  // First pass — parallel batches
-  for (let i = 0; i < toFetch.length; i += BATCH) {
-    const batch = toFetch.slice(i, i + BATCH);
-    await Promise.all(batch.map(async st => {
-      try {
-        const q = await fetchWithTimeout(st);
-        applyQuote(st.id, q);
-      } catch(e) {
-        console.warn('Fetch failed:', st.ticker, e.message);
+  if (btn) btn.textContent = `↻ Batch 0/${batches.length}`;
+
+  for (let bi = 0; bi < batches.length; bi++) {
+    const batch = batches[bi];
+    const symbols = batch.map(st => yahooSymbol(st));
+    if (btn) btn.textContent = `↻ Batch ${bi+1}/${batches.length}`;
+
+    const results = await fetchQuoteBatch(symbols);
+    batch.forEach(st => {
+      const q = results[yahooSymbol(st)];
+      if (q) applyQuote(st.id, q);
+      else if (!st.lastPrice || st.priceSource !== 'Manual') {
+        // Only retry if no price yet, or if it's not a manual override
+        // Don't retry manual prices just because batch didn't return them
         failed.push(st);
       }
-      done++;
-      const b = document.getElementById('refreshBtn');
-      if (b) b.textContent = `↻ ${done}/${total}`;
-      render();
-    }));
-    if (i + BATCH < toFetch.length) await sleep(200); // slightly longer pause on mobile
+    });
+
+    render();
+    if (bi < batches.length - 1) await sleep(300);
   }
 
-  // Retry pass — sequential, one at a time, longer timeout
+  // ── PHASE 2: Individual retry — v8 chart then Google ─────────────
+  // v8 chart API works for stocks that v7 returns empty for (common with SGX REITs)
   if (failed.length > 0) {
-    const b = document.getElementById('refreshBtn');
-    if (b) b.textContent = `↻ Retrying ${failed.length}…`;
-    await sleep(1500);
+    if (btn) btn.textContent = `↻ Retrying ${failed.length} stock${failed.length>1?'s':''}…`;
+    await sleep(500);
+
     for (const st of failed) {
       const symbol = yahooSymbol(st);
-      for (let pi = 0; pi < PROXIES.length; pi++) {
-        try {
-          const q = await Promise.race([
-            tryYahooProxy(PROXIES[pi], symbol),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 10000))
-          ]);
-          applyQuote(st.id, q);
+      let fetched = false;
+
+      // Try v8 chart first for SGX (v7 often returns empty for SGX REITs)
+      // Try v7 first for US stocks (more accurate price)
+      const tryOrder = st.exchange === 'SG'
+        ? ['v8', 'v7', 'google']
+        : ['v7', 'v8', 'google'];
+
+      for (const method of tryOrder) {
+        if (fetched) break;
+        for (const { fn, i } of getHealthyProxies()) {
+          if (fetched) break;
+          try {
+            let q;
+            if (method === 'v7') q = await tryYahooV7(fn, symbol);
+            else if (method === 'v8') q = await tryYahooProxy(fn, symbol);
+            else if (method === 'google') q = await tryGoogleFinance(st);
+            if (q) { applyQuote(st.id, q); markProxyOk(i); fetched = true; }
+          } catch(e) {
+            if (method !== 'google') markProxyFailed(i);
+          }
+        }
+        // Google doesn't need proxy loop
+        if (method === 'google' && !fetched) {
+          try {
+            const q = await tryGoogleFinance(st);
+            if (q) { applyQuote(st.id, q); fetched = true; }
+          } catch(e) {}
           break;
-        } catch(e) { await sleep(300); }
+        }
       }
+
       render();
-      await sleep(400);
+      await sleep(200);
     }
   }
 
   saveAll(); render();
   const still = stocks.filter(s => !s.lastPrice).length;
-  const b = document.getElementById('refreshBtn');
-  if (b) {
-    b.disabled = false;
-    b.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
   }
 
-  // Auto-resolve missing company names (where name still equals ticker symbol)
-  // Run quietly in background after prices are done
+  // ── PHASE 3: Name resolution ──────────────────────────────────────
   const needsName = stocks.filter(s =>
     !s.nameLocked &&
     s.companyName === s.ticker &&
@@ -887,32 +958,27 @@ async function refreshAllPrices(forceAll=false) {
   if (needsName.length > 0) {
     for (const st of needsName) {
       const name = await fetchNameOnly(st);
-      if (name) {
-        stocks = stocks.map(s => s.id === st.id ? {...s, companyName: name} : s);
-      }
-      await sleep(300);
+      if (name) stocks = stocks.map(s => s.id === st.id ? {...s, companyName: name} : s);
+      await sleep(200);
     }
-    if (needsName.length > 0) { saveAll(); render(); }
+    saveAll(); render();
   }
 }
 
 async function searchYahoo(query){
   const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
-  for (let pi = 0; pi < PROXIES.length; pi++) {
+  for (const { fn } of getHealthyProxies()) {
     try {
-      // Use proxyWrapSearch — search endpoint rejects _b timestamp inside URL
-      const r = await proxyWrapSearch(PROXIES[pi], yahooUrl, 6000);
+      const r = await proxyWrapSearch(fn, yahooUrl, 6000);
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const text = await r.text();
       if (!text || text[0] === '<') throw new Error('Blocked');
       const d = JSON.parse(text);
-      // Include EQUITY, ETF, REIT, TRUST — covers SGX REITs, TH stocks, US stocks
       const results = (d?.quotes||[]).filter(q => {
         const qt = (q.quoteType||'').toUpperCase();
         return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||
                qt.includes('EQUITY')||qt.includes('REIT')||qt.includes('TRUST');
       });
-      // Fallback: if filter removed everything, return all (handles unusual quoteTypes)
       return results.length ? results : (d?.quotes||[]).slice(0,6);
     } catch(e) { /* try next proxy */ }
   }
@@ -1163,10 +1229,11 @@ function openEditStock(id){
   const valSGD=getStockValueSGD(st);
   document.getElementById('edit-stock-info').innerHTML=`
     <div style="font-weight:600">${st.ticker} · ${st.exchange} · ${st.currency}</div>
-    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--text3);font-size:12px;margin-top:4px">Price not yet fetched</div>'}`;
+    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--amber);font-size:12px;margin-top:4px">⚠ Price not yet fetched — you can enter it manually below</div>'}`;
   document.getElementById('edit-units').value=st.units;
   document.getElementById('edit-company').value=st.companyName||'';
   document.getElementById('edit-lock-name').checked=!!(st.nameLocked);
+  document.getElementById('edit-price').value=st.lastPrice||'';
   document.getElementById('edit-stock-modal').style.display='flex';
   setTimeout(()=>document.getElementById('edit-units').focus(),60);
 }
@@ -1175,7 +1242,18 @@ function submitEditStock(){
   const units=parseFloat(document.getElementById('edit-units').value)||0;
   const companyName=document.getElementById('edit-company').value.trim();
   const nameLocked=document.getElementById('edit-lock-name').checked;
-  stocks=stocks.map(s=>s.id===editStockId?{...s,units,companyName:companyName||s.companyName,nameLocked}:s);
+  const manualPrice=parseFloat(document.getElementById('edit-price').value)||null;
+  stocks=stocks.map(s=>{
+    if(s.id!==editStockId) return s;
+    const updated={...s, units, companyName:companyName||s.companyName, nameLocked};
+    // Only override price if user explicitly entered one
+    if(manualPrice && manualPrice>0){
+      updated.lastPrice=manualPrice;
+      updated.lastUpdated=new Date().toISOString();
+      updated.priceSource='Manual';
+    }
+    return updated;
+  });
   closeEditStock(); saveAll(); render();
 }
 function deleteStockConfirm(){
