@@ -597,8 +597,9 @@ function yahooSymbol(st) {
   return st.ticker; // US stocks use ticker as-is
 }
 
-// Known ticker name overrides — add entries here if Yahoo returns wrong company name
-// Example: 'MBGL': 'Mobility Global Inc.'
+// Known ticker name overrides — only needed for tickers where Yahoo consistently
+// returns the WRONG company name (not just fails to return one).
+// For missing names, the app now auto-retries name lookup independently.
 const TICKER_NAME_LOCK = {};
 
 // Try Yahoo v8 chart endpoint
@@ -632,26 +633,32 @@ async function tryYahooProxy(proxyFn, symbol) {
 // including after-hours and pre-market when markets are closed
 async function tryYahooV7(proxyFn, symbol) {
   const fields = 'regularMarketPrice,regularMarketPreviousClose,postMarketPrice,preMarketPrice,longName,shortName,currency,marketState';
-  const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&fields=${fields}`;
-  const r = await proxyWrap(proxyFn, yahooUrl, 5000);
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  const text = await r.text();
-  if (!text || text[0] === '<') throw new Error('Blocked');
-  const d = JSON.parse(text);
-  const q = d?.quoteResponse?.result?.[0];
-  if (!q || !q.regularMarketPrice) throw new Error('No price');
-  const prev = q.regularMarketPreviousClose;
-  // Use the most current price available: post-market > regular > pre-market
-  const livePrice = q.postMarketPrice || q.regularMarketPrice || q.preMarketPrice;
-  // Change % is always vs previous close using regular market price
-  const change = prev ? ((q.regularMarketPrice - prev) / prev * 100) : null;
-  return {
-    price: livePrice,
-    change,
-    currency: q.currency || 'USD',
-    longName: q.longName || q.shortName || symbol,
-    source: 'Yahoo',
-  };
+  // Try both query1 and query2 — one may be rate-limited or blocked on mobile
+  const hosts = ['query1', 'query2'];
+  let lastErr;
+  for (const host of hosts) {
+    try {
+      const yahooUrl = `https://${host}.finance.yahoo.com/v7/finance/quote?symbols=${symbol}&fields=${fields}`;
+      const r = await proxyWrap(proxyFn, yahooUrl, 5000);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const text = await r.text();
+      if (!text || text[0] === '<') throw new Error('Blocked');
+      const d = JSON.parse(text);
+      const q = d?.quoteResponse?.result?.[0];
+      if (!q || !q.regularMarketPrice) throw new Error('No price');
+      const prev = q.regularMarketPreviousClose;
+      const livePrice = q.postMarketPrice || q.regularMarketPrice || q.preMarketPrice;
+      const change = prev ? ((q.regularMarketPrice - prev) / prev * 100) : null;
+      return {
+        price: livePrice,
+        change,
+        currency: q.currency || 'USD',
+        longName: q.longName || q.shortName || symbol,
+        source: 'Yahoo',
+      };
+    } catch(e) { lastErr = e; }
+  }
+  throw lastErr;
 }
 
 // Google Finance scrape fallback
@@ -698,19 +705,44 @@ function applyQuote(id, q) {
   stocks[i].lastChange = q.change;
   stocks[i].lastUpdated = new Date().toISOString();
   stocks[i].priceSource = q.source;
-  // Name update priority: 1) nameLocked (user override wins always) 2) TICKER_NAME_LOCK (hardcoded) 3) API name
+  // Name update: update if not user-locked AND (hardcoded override exists OR API returned a real name)
+  // Also update if current name still equals the ticker (was never resolved)
   if (!stocks[i].nameLocked) {
     if (TICKER_NAME_LOCK[stocks[i].ticker]) {
       stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
-    } else if (q.longName && q.longName !== stocks[i].ticker) {
+    } else if (q.longName && q.longName !== stocks[i].ticker && q.longName !== yahooSymbol(stocks[i])) {
+      // Got a real name from API — always apply it
       stocks[i].companyName = q.longName;
     }
   }
 }
 
-// Refresh prices
-// - If user clicked the button explicitly: refresh ALL stocks (force=true by default when called from button)
-// - If called on auto-load for missing prices: only fetch missing ones
+// Resolve company name for stocks where name still equals the ticker symbol.
+// Uses Yahoo search — lightweight, works even when price fetch fails.
+async function fetchNameOnly(st) {
+  const symbol = yahooSymbol(st);
+  try {
+    // Try v7 quote first — returns name along with price
+    for (let pi = 0; pi < PROXIES.length; pi++) {
+      try {
+        const q = await tryYahooV7(PROXIES[pi], symbol);
+        if (q.longName && q.longName !== st.ticker && q.longName !== symbol) {
+          return q.longName;
+        }
+      } catch(e) {}
+    }
+    // Fallback: use search endpoint — name-only, no price needed
+    const results = await searchYahoo(symbol);
+    const match = results.find(r =>
+      r.symbol === symbol ||
+      r.symbol === st.ticker ||
+      r.symbol === st.ticker + '.SI' ||
+      r.symbol === st.ticker + '.BK'
+    );
+    if (match) return match.longname || match.shortname || null;
+  } catch(e) {}
+  return null;
+}
 async function refreshAllPrices(forceAll=false) {
   const btn = document.getElementById('refreshBtn');
   if (!btn) return;
@@ -781,6 +813,24 @@ async function refreshAllPrices(forceAll=false) {
   if (b) {
     b.disabled = false;
     b.textContent = still > 0 ? `↻ Fetch ${still} missing` : '↻ Refresh prices';
+  }
+
+  // Auto-resolve missing company names (where name still equals ticker symbol)
+  // Run quietly in background after prices are done
+  const needsName = stocks.filter(s =>
+    !s.nameLocked &&
+    s.companyName === s.ticker &&
+    !TICKER_NAME_LOCK[s.ticker]
+  );
+  if (needsName.length > 0) {
+    for (const st of needsName) {
+      const name = await fetchNameOnly(st);
+      if (name) {
+        stocks = stocks.map(s => s.id === st.id ? {...s, companyName: name} : s);
+      }
+      await sleep(300);
+    }
+    if (needsName.length > 0) { saveAll(); render(); }
   }
 }
 
@@ -1883,6 +1933,7 @@ const DIVIDEND_DEFAULTS = {
   // SGX generic tickers
   'D05':   { dps: 3.06,  freq: 'quarterly' },
   'N2IU':  { dps: 0.085, freq: 'semi-annual' }, // Mapletree Pan Asia Commercial Trust — approx FY2025 DPU
+  'BUOU':  { dps: 0.058, freq: 'semi-annual' }, // Frasers Logistics & Commercial Trust — approx FY2025 DPU ~5.8 cents/unit
   // SET Thailand stocks — DPS in THB, 10% withholding tax applies
   'PTTEP': { dps: 9.63,  freq: 'semi-annual' },
   'PTT':   { dps: 0.95,  freq: 'annual' },       // PTT PCL — approx FY2025 DPS in THB, ~5% yield
@@ -2215,7 +2266,7 @@ const STOCK_CATEGORY = {
   'SPGI':'US Quality','TMO':'US Quality','UNH':'US Quality','ACN':'US Quality',
   'BXSL':'US Income',
   'A17U':'SG REIT','J69U':'SG REIT','M44U':'SG REIT',
-  'C38U':'SG REIT','SET EUR':'SG REIT','N2IU':'SG REIT',
+  'C38U':'SG REIT','SET EUR':'SG REIT','N2IU':'SG REIT','BUOU':'SG REIT',
   'PTTEP':'US Growth','PTT':'US Growth','SCB':'US Growth',
   'BBL':'US Growth','ADVANC':'US Growth','KBANK':'US Growth',
   'BWCU':'Suspended',
@@ -2235,7 +2286,7 @@ const STOCK_INDUSTRY = {
   'LVMUY':'Consumer Disc. (Luxury)','CPRT':'Industrials (Auto Auction)',
   'BXSL':'Credit / Lending',
   'C38U':'Industrial REIT','M44U':'Logistics REIT','A17U':'Commercial REIT',
-  'J69U':'Retail REIT','N2IU':'Commercial REIT',
+  'J69U':'Retail REIT','N2IU':'Commercial REIT','BUOU':'Logistics REIT',
   'O39':'Banking','U11':'Banking','SET EUR':'European REIT','BWCU':'Suspended (REIT)',
   'PTTEP':'Energy (Oil & Gas)','PTT':'Energy (Oil & Gas)',
   'SCB':'Banking (Thailand)','BBL':'Banking (Thailand)',

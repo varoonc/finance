@@ -1,7 +1,7 @@
 // Net Worth Tracker — Service Worker
 // Caches the app shell for offline use. Stock prices always fetch live.
 
-const CACHE = 'nwt-v4'; // ← bump this string every time you deploy a new version
+const CACHE = 'nwt-v5'; // ← bump this string every time you deploy a new version
 const SHELL = [
   './',
   './index.html',
