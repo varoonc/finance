@@ -595,118 +595,95 @@ const SEED_ASSETS=[
 // to avoid rate-limiting. Google Finance scraped as last-resort fallback.
 
 // ── CORS Proxy list ───────────────────────────────────────────────────
-// allorigins works from any origin (file://, github.io, etc)
-// Rate limit: ~20 req/min. With 600ms delay between stocks we stay well under this.
-const PROXY_FN = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+// Multiple CORS proxies — tried in order, first success wins
+// Your own Cloudflare Worker is first — reliable, no rate limits, 100K req/day free
+const PROXIES = [
+  url => `https://throbbing-brook-dd8d.varoonc.workers.dev?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Try Yahoo v8 chart endpoint — most reliable for all exchanges including SGX REITs
-async function tryYahooV8(symbol) {
-  for (const host of ['query1', 'query2']) {
+async function proxyFetch(yahooUrl, timeoutMs=10000) {
+  for (const proxy of PROXIES) {
     try {
-      const yahooUrl = `https://${host}.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d&_b=${Date.now()}`;
       const r = await Promise.race([
-        fetch(PROXY_FN(yahooUrl)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 10000))
+        fetch(proxy(yahooUrl)),
+        new Promise((_,rej) => setTimeout(()=>rej(new Error('Timeout')), timeoutMs))
       ]);
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) throw new Error('HTTP '+r.status);
       const text = await r.text();
-      if (!text || text[0] === '<') throw new Error('Blocked');
+      if (!text || text[0]==='<') throw new Error('HTML response');
+      return text;
+    } catch(e) { /* try next proxy */ }
+  }
+  throw new Error('All proxies failed');
+}
+
+async function tryYahooV8(symbol) {
+  for (const host of ['query1','query2']) {
+    try {
+      const url = `https://${host}.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=5d`;
+      const text = await proxyFetch(url);
       const d = JSON.parse(text);
       const meta = d?.chart?.result?.[0]?.meta;
       if (!meta || !meta.regularMarketPrice) throw new Error('No price');
       const prev = meta.chartPreviousClose || meta.previousClose;
       return {
         price: meta.regularMarketPrice,
-        change: prev ? ((meta.regularMarketPrice - prev) / prev * 100) : null,
-        currency: meta.currency || 'USD',
-        longName: meta.longName || meta.shortName || symbol,
+        change: prev ? ((meta.regularMarketPrice-prev)/prev*100) : null,
+        currency: meta.currency||'USD',
+        longName: meta.longName||meta.shortName||symbol,
         source: 'Yahoo',
       };
-    } catch(e) { /* try next host */ }
+    } catch(e) {}
   }
-  throw new Error('v8 failed for ' + symbol);
+  throw new Error('v8 failed for '+symbol);
 }
 
-// Google Finance scrape — last resort fallback
 async function tryGoogleFinance(st) {
-  const exchanges = st.exchange === 'SG' ? ['SGX'] : st.exchange === 'TH' ? ['BKK'] : ['NASDAQ', 'NYSE', 'NYSEARCA', 'NYSEMKT'];
+  const exchanges = st.exchange==='SG' ? ['SGX'] : st.exchange==='TH' ? ['BKK'] : ['NASDAQ','NYSE','NYSEARCA','NYSEMKT'];
+  const ao = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
   for (const exch of exchanges) {
     try {
       const gUrl = `https://www.google.com/finance/quote/${encodeURIComponent(st.ticker)}:${exch}`;
-      const r = await Promise.race([
-        fetch(PROXY_FN(gUrl)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 12000))
-      ]);
+      const r = await Promise.race([fetch(ao(gUrl)), new Promise((_,rej)=>setTimeout(()=>rej(new Error('Timeout')),12000))]);
       if (!r.ok) continue;
       const html = await r.text();
       const m = html.match(/class="YMlKec fxKbKc"[^>]*>([^<]+)</);
       if (!m) continue;
-      const price = parseFloat(m[1].replace(/[^0-9.]/g, ''));
+      const price = parseFloat(m[1].replace(/[^0-9.]/g,''));
       if (!price) continue;
       const changeM = html.match(/([+-]?\d+\.?\d*)\s*\(([+-]?\d+\.?\d*)%\)/);
       const changePct = changeM ? parseFloat(changeM[2]) : null;
       const currM = html.match(/data-currency-code="([A-Z]{3})"/);
-      const currency = currM ? currM[1] : (st.exchange === 'SG' ? 'SGD' : st.exchange === 'TH' ? 'THB' : 'USD');
-      return { price, change: changePct, currency, longName: st.companyName, source: 'Google' };
+      const currency = currM ? currM[1] : (st.exchange==='SG'?'SGD':st.exchange==='TH'?'THB':'USD');
+      return {price, change:changePct, currency, longName:st.companyName, source:'Google'};
     } catch(e) { continue; }
   }
-  throw new Error('Google also failed for ' + st.ticker);
+  throw new Error('Google failed for '+st.ticker);
 }
 
-// Fetch a single stock — v8 first, then Google Finance
 async function fetchQuote(st) {
   const symbol = yahooSymbol(st);
-  try {
-    return await tryYahooV8(symbol);
-  } catch(e) {
-    return await tryGoogleFinance(st);
-  }
+  try { return await tryYahooV8(symbol); }
+  catch(e) { return await tryGoogleFinance(st); }
 }
 
-// Search Yahoo Finance for a ticker
 async function searchYahoo(query) {
-  const yahooUrl = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0&enableFuzzyQuery=true`;
+  const url = `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(query)}&quotesCount=8&newsCount=0`;
   try {
-    const r = await Promise.race([
-      fetch(PROXY_FN(yahooUrl)),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 8000))
-    ]);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const text = await r.text();
-    if (!text || text[0] === '<') throw new Error('Blocked');
+    const text = await proxyFetch(url, 8000);
     const d = JSON.parse(text);
-    const results = (d?.quotes || []).filter(q => {
-      const qt = (q.quoteType || '').toUpperCase();
-      return qt === 'EQUITY' || qt === 'ETF' || qt === 'REIT' || qt === 'TRUST' ||
-             qt.includes('EQUITY') || qt.includes('REIT') || qt.includes('TRUST');
+    const results = (d?.quotes||[]).filter(q=>{
+      const qt=(q.quoteType||'').toUpperCase();
+      return qt==='EQUITY'||qt==='ETF'||qt==='REIT'||qt==='TRUST'||qt.includes('REIT')||qt.includes('TRUST');
     });
-    return results.length ? results : (d?.quotes || []).slice(0, 6);
+    return results.length ? results : (d?.quotes||[]).slice(0,6);
   } catch(e) { return []; }
 }
 
-// Refresh all prices — one at a time, 600ms apart, to avoid rate limits
-// Apply a fetched quote to the stocks array
-function applyQuote(id, q) {
-  const i = stocks.findIndex(x => x.id === id);
-  if (i < 0) return;
-  if (q.price && q.price > 0) {
-    stocks[i].lastPrice    = q.price;
-    stocks[i].lastChange   = q.change;
-    stocks[i].lastUpdated  = new Date().toISOString();
-    stocks[i].priceSource  = q.source || 'Yahoo';
-  }
-  if (!stocks[i].nameLocked) {
-    if (TICKER_NAME_LOCK[stocks[i].ticker]) {
-      stocks[i].companyName = TICKER_NAME_LOCK[stocks[i].ticker];
-    } else if (q.longName && q.longName !== stocks[i].ticker) {
-      stocks[i].companyName = q.longName;
-    }
-  }
-}
-
-// Resolve company name for stocks where name still equals ticker
 async function fetchNameOnly(st) {
   if (TICKER_NAME_LOCK[st.ticker]) return TICKER_NAME_LOCK[st.ticker];
   try {
@@ -715,13 +692,12 @@ async function fetchNameOnly(st) {
   } catch(e) {}
   try {
     const results = await searchYahoo(yahooSymbol(st));
-    const match = results.find(r =>
-      r.symbol === yahooSymbol(st) || r.symbol === st.ticker
-    );
+    const match = results.find(r => r.symbol===yahooSymbol(st) || r.symbol===st.ticker);
     if (match) return match.longname || match.shortname || null;
   } catch(e) {}
   return null;
 }
+
 
 async function refreshAllPrices(forceAll = false) {
   const btn = document.getElementById('refreshBtn');
