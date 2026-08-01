@@ -2013,6 +2013,7 @@ const DIVIDEND_DEFAULTS = {
   'BBL':   { dps: 10.00, freq: 'semi-annual' },
   'ADVANC':{ dps: 17.50, freq: 'semi-annual' },
   'KBANK': { dps: 9.00,  freq: 'semi-annual' },
+  'CPALL': { dps: 1.65,  freq: 'annual' },       // CP ALL — matches user's manual override; kept as default too
 };
 
 function getDivInfo(st){
@@ -2259,7 +2260,7 @@ function renderDividends(){
       ${suspended.map(r=>{const note=getDivInfo(r.st).note||'';return `<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:0.5px solid var(--border)"><span style="font-family:monospace;font-size:13px;font-weight:600;color:var(--red);min-width:60px">${r.st.ticker}</span><div><div style="font-size:13px;font-weight:500">${r.st.companyName}</div><div style="font-size:12px;color:var(--text2);margin-top:2px">${note}</div></div></div>`;}).join('')}
     </div>`:''}
     <div class="card">
-      <div class="card-title">Approximate payout schedule</div>
+      <div class="card-title">Payout schedule (researched per-stock, see note below for approximations)</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px">${buildPayoutCalendar(paying)}</div>
     </div>`;
 }
@@ -2311,19 +2312,109 @@ function resetDivEdit(){
   saveAll(); render();
 }
 
+// ── Re-tag a stock's Insights category/industry (overrides STOCK_CATEGORY / STOCK_INDUSTRY) ──
+let _tagEditId = null;
+function openTagEdit(id){
+  const st=stocks.find(x=>x.id===id); if(!st) return;
+  _tagEditId=id;
+  const curCat=classifyCategory(st);
+  const curInd=classifyIndustry(st);
+  const existing=document.getElementById('tag-edit-overlay');
+  if(existing) existing.remove();
+  const div=document.createElement('div');
+  div.id='tag-edit-overlay';
+  div.className='overlay';
+  div.onclick=e=>{ if(e.target===div) div.remove(); };
+  div.innerHTML=`<div class="modal" onclick="event.stopPropagation()">
+    <h2>Re-tag — ${st.ticker}</h2>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px">${st.companyName}<br>Override the automatic classification used in Insights (allocation bucket + industry exposure).</p>
+    <label>Allocation category</label>
+    <select id="tag-cat" style="margin-bottom:10px">
+      ${ALLOC_TARGET.map(a=>`<option value="${a.key}" ${curCat===a.key?'selected':''}>${a.label}</option>`).join('')}
+    </select>
+    <label>Industry / sector label</label>
+    <input type="text" id="tag-ind" value="${curInd.replace(/"/g,'&quot;')}" placeholder="e.g. Retail" style="margin-bottom:14px">
+    <div class="modal-btns">
+      <button class="btn btn-primary" style="flex:1" onclick="saveTagEdit()">Save</button>
+      <button class="btn btn-danger" onclick="resetTagEdit()">Reset to default</button>
+      <button class="btn" onclick="document.getElementById('tag-edit-overlay').remove()">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+}
+function saveTagEdit(){
+  const cat=document.getElementById('tag-cat').value;
+  const ind=document.getElementById('tag-ind').value.trim();
+  stocks=stocks.map(s=>s.id===_tagEditId?{...s,categoryOverride:cat,industryOverride:ind||undefined}:s);
+  document.getElementById('tag-edit-overlay').remove();
+  saveAll(); render();
+}
+function resetTagEdit(){
+  stocks=stocks.map(s=>s.id===_tagEditId?{...s,categoryOverride:undefined,industryOverride:undefined}:s);
+  document.getElementById('tag-edit-overlay').remove();
+  saveAll(); render();
+}
+
+// Actual historical payout months per ticker (0=Jan..11=Dec), based on real ex-dividend/
+// payment-date patterns rather than a generic "quarterly = Jan/Apr/Jul/Oct" assumption.
+// Falls back to FREQ_MONTHS (see buildPayoutCalendar) for any ticker not yet researched here,
+// so a brand-new position still shows up somewhere on the calendar instead of vanishing.
+const PAYOUT_MONTHS = {
+  // US stocks — verified against actual payment-date history (not ex-date, not declaration)
+  'AAPL':  [1,4,7,10],   // Feb, May, Aug, Nov
+  'ASML':  [1,4,7,10],   // Feb, May, Aug, Nov (quarterly since 2022; interim + final)
+  'BXSL':  [1,4,7,10],   // Feb, May, Aug, Nov
+  'ELV':   [2,5,8,11],   // Mar, Jun, Sep, Dec
+  'LVMUY': [3,11],       // Apr (final), Dec (interim)
+  'MA':    [1,4,7,10],   // Feb, May, Aug, Nov
+  'META':  [2,5,8,11],   // Mar, Jun, Sep, Dec
+  'MSFT':  [2,5,8,11],   // Mar, Jun, Sep, Dec
+  'NVDA':  [2,5,8,11],   // Mar, Jun, Sep, Dec (approx — recent cycle drifting toward Jun/Oct)
+  'SPGI':  [2,5,8,11],   // Mar, Jun, Sep, Dec
+  'TMO':   [0,3,6,9],    // Jan, Apr, Jul, Oct
+  'UNH':   [2,5,8,11],   // Mar, Jun, Sep, Dec
+  'ACN':   [1,4,7,10],   // Feb, May, Aug, Nov
+  // SGX stocks — based on actual distribution payment dates, not ex-date
+  'A17U':  [2,8],        // Mar, Sep (per CLAR's own IR site: "estimated distribution payment in March/September")
+  'J69U':  [4,10],       // May, Nov
+  'M44U':  [1,4,7,10],   // Feb, May, Aug, Nov (quarterly REIT, ~5-6 week lag after quarter-end)
+  'O39':   [4,7],        // May (final), Aug (interim)
+  'U11':   [4,8],        // May (final), Sep (interim) — approx, UOB's interim trails OCBC's slightly
+  'C38U':  [2,8],        // Mar, Sep — approx
+  'N2IU':  [5,11],       // Jun, Dec — confirmed from MPACT distribution notices (H2 paid ~early Dec, H1 paid ~early Jun)
+  'BUOU':  [5,11],       // Jun, Dec — approx, based on FY periods ending Mar 31 / Sep 30
+  'CJLU':  [5,11],       // Jun, Nov/Dec — confirmed from NetLink NBN Trust's own payment history
+  'HMN':   [3,8],        // Apr, Sep — approx, not independently confirmed this session
+  'SET EUR':[5,11],      // Jun, Dec — approx (European REIT, not independently confirmed this session)
+  // SET Thailand stocks — approximate, Thai listcos typically pay after AGM (~Apr/May) plus
+  // an interim (~Sep), not independently confirmed line-by-line this session
+  'SCB':   [3,8],
+  'ADVANC':[3,8],
+  'CPALL': [4],          // annual, paid once around May after AGM
+  'PTTEP': [3,8],
+  'PTT':   [4],
+  'BBL':   [3,8],
+  'KBANK': [3,8],
+};
+
 function buildPayoutCalendar(paying){
   const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // Generic fallback only used for a ticker with no entry in PAYOUT_MONTHS yet (e.g. a
+  // brand-new position) — keeps it visible on the calendar rather than silently dropped.
   const FREQ_MONTHS={'quarterly':[0,3,6,9],'semi-annual':[2,8],'monthly':[0,1,2,3,4,5,6,7,8,9,10,11],'annual':[11]};
   const cal=Array.from({length:12},()=>[]);
+  const approx=new Set();
   paying.forEach(r=>{
-    const months=FREQ_MONTHS[r.freq]||[];
+    const mapped=PAYOUT_MONTHS[r.st.ticker];
+    const months=mapped || FREQ_MONTHS[r.freq] || [];
+    if(!mapped) approx.add(r.st.ticker);
     months.forEach(m=>cal[m].push({ticker:r.st.ticker,exchange:r.st.exchange}));
   });
   const legend=`<div style="grid-column:1/-1;display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px;font-size:11px">
     <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(55,138,221,.18);border:0.5px solid rgba(55,138,221,.4)"></span><span style="color:var(--text2)">US stock</span></span>
     <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(29,158,117,.18);border:0.5px solid rgba(29,158,117,.4)"></span><span style="color:var(--text2)">SGX stock</span></span>
     <span style="display:flex;align-items:center;gap:4px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:rgba(127,119,221,.18);border:0.5px solid rgba(127,119,221,.4)"></span><span style="color:var(--text2)">SET Thailand stock</span></span>
-  </div>`;
+  </div>${approx.size>0?`<div style="grid-column:1/-1;font-size:11px;color:var(--text3);margin-bottom:2px">⚠ Approximate months (not yet individually verified): ${[...approx].join(', ')}</div>`:''}`;
   const cells=MONTHS.map((m,i)=>{
     const chips=cal[i].length>0?cal[i].map(({ticker,exchange})=>{
       const isUS=exchange==='US'; const isTH=exchange==='TH';
@@ -2352,8 +2443,8 @@ const STOCK_CATEGORY = {
   'A17U':'SG REIT','J69U':'SG REIT','M44U':'SG REIT',
   'C38U':'SG REIT','SET EUR':'SG REIT','N2IU':'SG REIT','BUOU':'SG REIT',
   'CJLU':'SG REIT','HMN':'SG REIT',
-  'PTTEP':'US Growth','PTT':'US Growth','SCB':'US Growth',
-  'BBL':'US Growth','ADVANC':'US Growth','KBANK':'US Growth',
+  'PTTEP':'TH Dividend','PTT':'TH Dividend','SCB':'TH Dividend',
+  'BBL':'TH Dividend','ADVANC':'TH Dividend','KBANK':'TH Dividend','CPALL':'TH Dividend',
   'BWCU':'Suspended',
   'O39':'SG Blue Chip','U11':'SG Blue Chip','D05':'SG Blue Chip',
 };
@@ -2376,7 +2467,7 @@ const STOCK_INDUSTRY = {
   'CJLU':'Telecom Infrastructure REIT','HMN':'Hospitality REIT',
   'PTTEP':'Energy (Oil & Gas)','PTT':'Energy (Oil & Gas)',
   'SCB':'Banking (Thailand)','BBL':'Banking (Thailand)',
-  'ADVANC':'Telecom (Thailand)','KBANK':'Banking (Thailand)',
+  'ADVANC':'Telecom (Thailand)','KBANK':'Banking (Thailand)','CPALL':'Retail (Thailand)',
 };
 
 const INDUSTRY_BROAD = {
@@ -2399,12 +2490,14 @@ const INDUSTRY_BROAD = {
 // counted somewhere — instead of each section falling back (or failing to fall back)
 // differently.
 function classifyCategory(st){
+  if(st.categoryOverride) return st.categoryOverride;
   if(STOCK_CATEGORY[st.ticker]) return STOCK_CATEGORY[st.ticker];
   if(st.exchange==='SG') return 'SG Blue Chip';
-  if(st.exchange==='TH') return 'US Growth'; // no dedicated Thailand bucket in ALLOC_TARGET yet
+  if(st.exchange==='TH') return 'TH Dividend'; // SET Thailand stocks are added to this portfolio specifically for dividend income
   return 'US Quality';
 }
 function classifyIndustry(st){
+  if(st.industryOverride) return st.industryOverride;
   if(STOCK_INDUSTRY[st.ticker]) return STOCK_INDUSTRY[st.ticker];
   if(st.exchange==='SG') return 'Unclassified (SG)';
   if(st.exchange==='TH') return 'Unclassified (TH)';
@@ -2416,7 +2509,8 @@ const ALLOC_TARGET = [
   {key:'SG Blue Chip',label:'SG Blue Chips',target:12,color:'#2ECC71',desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.'},
   {key:'US Quality',label:'US Quality/Dividend',target:30,color:'#378ADD',desc:'Dividend payers. 30% WHT applies — strong compounders.'},
   {key:'US Income',label:'Credit / Lending',target:5,color:'#7F77DD',desc:'BXSL — Business Development Company (BDC). High income, watch credit risk.'},
-  {key:'US Growth',label:'US Growth',target:15,color:'#BA7517',desc:'No dividend. Capital appreciation only. Reduce over time.'},
+  {key:'US Growth',label:'US Growth',target:10,color:'#BA7517',desc:'No dividend. Capital appreciation only. Reduce over time.'},
+  {key:'TH Dividend',label:'TH Dividend',target:5,color:'#C0392B',desc:'SET Thailand dividend payers — 10% WHT applies. Watch THB/SGD exposure.'},
   {key:'Cash',label:'Cash / Emergency',target:10,color:'#888780',desc:'3–6 months expenses. Investable buffer.'},
   {key:'Suspended',label:'Suspended',target:0,color:'#E24B4A',desc:'EC World REIT — trading & distribution halted.'},
 ];
@@ -2779,6 +2873,7 @@ function _buildIndustryCharts(){
               <th style="text-align:right">Price</th>
               <th style="text-align:right">Value (SGD)</th>
               <th style="text-align:right">% port.</th>
+              <th></th>
             </tr></thead>
             <tbody>
               ${stList.map(st=>{
@@ -2791,6 +2886,7 @@ function _buildIndustryCharts(){
                   <td style="text-align:right;font-size:12px;color:var(--text2)">${priceStr}</td>
                   <td style="text-align:right;font-size:12px;font-weight:500">${fmtK(st.valSGD)}</td>
                   <td style="text-align:right;font-size:11px;color:var(--text2)">${(st.valSGD/allTotal*100).toFixed(1)}%</td>
+                  <td style="text-align:right"><button class="btn btn-sm" onclick="openTagEdit('${st.id}')" style="padding:2px 8px;font-size:10px">Edit</button></td>
                 </tr>`;
               }).join('')}
             </tbody>
@@ -2865,6 +2961,7 @@ function toggleRebalDetail(key, color){
       <td style="text-align:right;font-size:12px">${st.units.toLocaleString()}</td>
       <td style="text-align:right;font-size:12px">${priceStr}${chg}</td>
       <td style="text-align:right;font-size:12px;font-weight:600">${val?fmtK(val):'—'}</td>
+      <td style="text-align:right"><button class="btn btn-sm" onclick="openTagEdit('${st.id}')" style="padding:2px 8px;font-size:10px">Edit</button></td>
     </tr>`;
   }).join('');
 
@@ -2880,6 +2977,7 @@ function toggleRebalDetail(key, color){
         <th style="text-align:right">Units</th>
         <th style="text-align:right">Price</th>
         <th style="text-align:right">Value (SGD)</th>
+        <th></th>
       </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
