@@ -2442,7 +2442,7 @@ const STOCK_CATEGORY = {
   'BXSL':'US Income',
   'A17U':'SG REIT','J69U':'SG REIT','M44U':'SG REIT',
   'C38U':'SG REIT','SET EUR':'SG REIT','N2IU':'SG REIT','BUOU':'SG REIT',
-  'CJLU':'SG REIT','HMN':'SG REIT',
+  'CJLU':'SG REIT','HMN':'SG REIT','AJBU':'SG REIT',
   'PTTEP':'TH Dividend','PTT':'TH Dividend','SCB':'TH Dividend',
   'BBL':'TH Dividend','ADVANC':'TH Dividend','KBANK':'TH Dividend','CPALL':'TH Dividend',
   'BWCU':'Suspended',
@@ -2505,12 +2505,12 @@ function classifyIndustry(st){
 }
 
 const ALLOC_TARGET = [
-  {key:'SG REIT',label:'SG REITs',target:28,color:'#1D9E75',desc:'Tax-free income. Best fit for retirement cashflow.'},
-  {key:'SG Blue Chip',label:'SG Blue Chips',target:12,color:'#2ECC71',desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.'},
-  {key:'US Quality',label:'US Quality/Dividend',target:30,color:'#378ADD',desc:'Dividend payers. 30% WHT applies — strong compounders.'},
+  {key:'SG REIT',label:'SG REITs',target:30,color:'#1D9E75',desc:'Tax-free income. Best fit for retirement cashflow.'},
+  {key:'SG Blue Chip',label:'SG Blue Chips',target:15,color:'#2ECC71',desc:'DBS, OCBC, UOB — high dividend, tax-free, defensive.'},
+  {key:'US Quality',label:'US Quality/Dividend',target:25,color:'#378ADD',desc:'Dividend payers. 30% WHT applies — strong compounders, but the biggest tax drag of any bucket.'},
   {key:'US Income',label:'Credit / Lending',target:5,color:'#7F77DD',desc:'BXSL — Business Development Company (BDC). High income, watch credit risk.'},
-  {key:'US Growth',label:'US Growth',target:10,color:'#BA7517',desc:'No dividend. Capital appreciation only. Reduce over time.'},
-  {key:'TH Dividend',label:'TH Dividend',target:5,color:'#C0392B',desc:'SET Thailand dividend payers — 10% WHT applies. Watch THB/SGD exposure.'},
+  {key:'US Growth',label:'US Growth',target:7,color:'#BA7517',desc:'No dividend. Capital appreciation only. Reduce over time.'},
+  {key:'TH Dividend',label:'TH Dividend',target:8,color:'#C0392B',desc:'SET Thailand dividend payers — 10% WHT (better than US, worse than SG). Cap sized to limit THB/SGD currency exposure.'},
   {key:'Cash',label:'Cash / Emergency',target:10,color:'#888780',desc:'3–6 months expenses. Investable buffer.'},
   {key:'Suspended',label:'Suspended',target:0,color:'#E24B4A',desc:'EC World REIT — trading & distribution halted.'},
 ];
@@ -2645,7 +2645,7 @@ function renderInsights(){
       <div class="card-title" style="margin:0">Allocation vs target <span style="font-size:10px;font-weight:400;color:var(--text3)">(% of investable assets)</span></div>
       <span style="font-size:11px;color:var(--text3)">Based on S$${Math.round(investable/1000)}K investable · click a row to see positions</span>
     </div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Target calibrated for retirement income goal — maximise tax-free SGX income while keeping quality US compounders. Reduce US Growth over time; build SG REITs + Blue Chips.</p>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Target calibrated for retirement income goal across all three markets — maximise tax-free SGX income, use TH Dividend as a smaller, deliberately-capped income sleeve (10% WHT, THB currency risk), and keep quality US compounders while reducing US Growth over time.</p>
     <div style="overflow-x:auto"><table class="stock-table" id="rebalTable">
       <thead><tr>
         <th>Category</th>
