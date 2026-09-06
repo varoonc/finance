@@ -247,6 +247,9 @@ svg text{font-family:-apple-system,BlinkMacSystemFont,sans-serif;}
 <div class="modal" onclick="event.stopPropagation()">
   <h2>Edit position</h2>
   <div id="edit-stock-info" style="background:var(--bg2);border-radius:var(--radius-sm);padding:10px;margin-bottom:12px;font-size:13px;"></div>
+  <label>Price <span id="edit-price-currency" style="color:var(--text3);font-weight:400"></span></label>
+  <input type="number" id="edit-price" min="0" step="any" style="margin-bottom:4px;">
+  <div id="edit-price-ts" style="font-size:11px;color:var(--text3);margin-bottom:12px"></div>
   <label>Units held</label>
   <input type="number" id="edit-units" min="0" step="any" style="margin-bottom:12px;">
   <label>Company name <span style="color:var(--text3);font-weight:400">(edit to override auto-fetch)</span></label>
@@ -402,6 +405,11 @@ function tsAgo(iso){
   if(d<60) return Math.round(d)+'m ago';
   if(d<1440) return Math.round(d/60)+'h ago';
   return Math.round(d/1440)+'d ago';
+}
+function fmtDateTime(iso){
+  if(!iso) return 'never';
+  const d=new Date(iso);
+  return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'})+', '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1177,7 +1185,13 @@ function openEditStock(id){
   const valSGD=getStockValueSGD(st);
   document.getElementById('edit-stock-info').innerHTML=`
     <div style="font-weight:600">${st.ticker} · ${st.exchange} · ${st.currency}</div>
-    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Last price: <strong>${fmtPrice(st.lastPrice,st.currency)}</strong> · Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--text3);font-size:12px;margin-top:4px">Price not yet fetched</div>'}`;
+    ${st.lastPrice?`<div style="margin-top:4px;font-size:12px;color:var(--text2)">Value: <strong>${fmtK(valSGD)}</strong></div>`:'<div style="color:var(--text3);font-size:12px;margin-top:4px">Price not yet fetched</div>'}`;
+  document.getElementById('edit-price').value=st.lastPrice!=null?st.lastPrice:'';
+  document.getElementById('edit-price-currency').textContent=`(${st.currency})`;
+  const sourceLabel = st.priceSource==='Manual' ? 'manually entered' : st.priceSource ? `fetched via ${st.priceSource}` : null;
+  document.getElementById('edit-price-ts').textContent = st.lastUpdated
+    ? `Last updated: ${fmtDateTime(st.lastUpdated)} (${tsAgo(st.lastUpdated)})${sourceLabel?' — '+sourceLabel:''}`
+    : 'Never updated';
   document.getElementById('edit-units').value=st.units;
   document.getElementById('edit-company').value=st.companyName||'';
   document.getElementById('edit-lock-name').checked=!!(st.nameLocked);
@@ -1189,7 +1203,22 @@ function submitEditStock(){
   const units=parseFloat(document.getElementById('edit-units').value)||0;
   const companyName=document.getElementById('edit-company').value.trim();
   const nameLocked=document.getElementById('edit-lock-name').checked;
-  stocks=stocks.map(s=>s.id===editStockId?{...s,units,companyName:companyName||s.companyName,nameLocked}:s);
+  const priceInput=document.getElementById('edit-price').value;
+  const newPrice=priceInput!==''?parseFloat(priceInput):null;
+  stocks=stocks.map(s=>{
+    if(s.id!==editStockId) return s;
+    const updated={...s,units,companyName:companyName||s.companyName,nameLocked};
+    // Only touch price/timestamp/source if the entered price actually differs from what's
+    // stored — this is what marks it as a fresh manual entry. Re-saving the same price
+    // (e.g. just changing units) must NOT reset the "last updated" timestamp.
+    if(newPrice!=null && newPrice!==s.lastPrice){
+      updated.lastPrice=newPrice;
+      updated.lastChange=0;
+      updated.lastUpdated=new Date().toISOString();
+      updated.priceSource='Manual';
+    }
+    return updated;
+  });
   closeEditStock(); saveAll(); render();
 }
 function deleteStockConfirm(){
