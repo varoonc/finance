@@ -1259,7 +1259,12 @@ function recordSnapshot(){
   const alloc={};
   stocks.forEach(st=>{const v=getStockValueSGD(st);if(v)alloc['Stocks']=(alloc['Stocks']||0)+v;});
   assets.filter(a=>!a.isLiability).forEach(a=>{alloc[a.category]=(alloc[a.category]||0)+getAssetValueSGD(a);});
-  snapshots.push({date:todayStr(),totalAssets:t.totalAssets,totalLiab:t.totalLiab,nav:t.nav,investable:t.investable,stockValue:t.stockValSGD,note,alloc});
+  // Holdings + FX are stored so the next comparison can separate price/FX moves from new money.
+  // Optional fields: snapshots recorded before this version simply don't have them.
+  const pos={}; let posMissing=0;
+  stocks.forEach(st=>{ if(st.lastPrice!=null && st.units) pos[st.ticker]=[st.units,st.lastPrice,st.currency||'SGD']; else if(st.units) posMissing++; });
+  const fx={usd:usdSgdRate,thb:thbSgdRate,eur:eurSgdRate};
+  snapshots.push({date:todayStr(),totalAssets:t.totalAssets,totalLiab:t.totalLiab,nav:t.nav,investable:t.investable,stockValue:t.stockValSGD,note,alloc,fx,pos,posMissing});
   snapshots.sort((a,b)=>a.date.localeCompare(b.date));
   showSnapForm=false; saveAll(); render();
 }
@@ -2231,7 +2236,7 @@ function renderDividends(){
       <div class="metric"><div class="metric-label">Net annual income</div><div class="metric-value" style="color:var(--green)">${fmtK(totalNet)}</div><div class="metric-sub">after all withholding</div></div>
       <div class="metric"><div class="metric-label">Net monthly income</div><div class="metric-value">${fmtK(totalMonthly)}</div><div class="metric-sub">what you actually receive</div></div>
       <div class="metric"><div class="metric-label">Annual tax drag</div><div class="metric-value" style="color:var(--red)">${fmtK(totalTaxDrag)}</div><div class="metric-sub">US 30% + TH 10% WHT</div></div>
-      <div class="metric"><div class="metric-label">Dividends cover goal</div><div class="metric-value" style="color:${goalPct>=100?'var(--green)':goalPct>=50?'var(--blue)':'var(--amber)'}">${goalPct}%</div><div class="metric-sub">${goalPct>=100?'🎉 Fully covered!':'S$'+Math.round(GOAL_MONTHLY-totalMonthly).toLocaleString()+'/mo gap'}</div></div>
+      <div class="metric"><div class="metric-label">Dividends cover goal</div><div class="metric-value" style="color:${goalPct>=100?'var(--green)':goalPct>=50?'var(--blue)':'var(--amber)'}">S$${Math.round(totalMonthly).toLocaleString()}/mo</div><div class="metric-sub">${goalPct}% of S$${GOAL_MONTHLY.toLocaleString()} goal · ${goalPct>=100?'🎉 fully covered':'S$'+Math.round(GOAL_MONTHLY-totalMonthly).toLocaleString()+'/mo gap'}</div></div>
     </div>
     <div class="card" style="margin-bottom:12px">
       <div class="card-title">Income by market — gross vs net after withholding</div>
@@ -2257,7 +2262,7 @@ function renderDividends(){
       </div>
       <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text2);margin-bottom:6px">
         <span>Net dividend income vs S$${GOAL_MONTHLY.toLocaleString()}/mo goal</span>
-        <span style="font-weight:600;color:${goalPct>=100?'var(--green)':'var(--text)'}">${goalPct}%</span>
+        <span style="font-weight:600;color:${goalPct>=100?'var(--green)':'var(--text)'}">S$${Math.round(totalMonthly).toLocaleString()}/mo · ${goalPct}%</span>
       </div>
       <div style="background:var(--bg2);border-radius:6px;height:10px;overflow:hidden;margin-bottom:5px">
         <div style="width:${Math.min(100,goalPct)}%;height:100%;border-radius:6px;background:${goalPct>=100?'var(--green)':'var(--blue)'};transition:width .5s"></div>
@@ -2544,6 +2549,74 @@ const ALLOC_TARGET = [
   {key:'Suspended',label:'Suspended',target:0,color:'#E24B4A',desc:'EC World REIT — trading & distribution halted.'},
 ];
 
+// ── Snapshot performance helpers ─────────────────────────────────────
+// Everything here tolerates old snapshots that have no `pos` / `fx` fields.
+function _snapFx(snap,ccy){
+  const f=snap&&snap.fx; if(!f) return null;
+  return ccy==='USD'?f.usd : ccy==='THB'?f.thb : ccy==='EUR'?f.eur : 1;
+}
+// Split one period (prev -> curr) into price effect, FX effect and the residual "new money".
+function periodPerf(prev,curr){
+  const out={
+    date:curr.date, label:curr.date.slice(5), from:prev.date,
+    days:(new Date(curr.date)-new Date(prev.date))/864e5,
+    navDelta:curr.nav-prev.nav,
+    invDelta:(curr.investable||0)-(prev.investable||0),
+    hasHoldings:false
+  };
+  if(!prev.pos||!curr.pos||!prev.fx||!curr.fx) return out;
+  let price=0,fx=0;
+  Object.keys(prev.pos).forEach(t=>{
+    const c=curr.pos[t]; if(!c) return;            // sold / no price: can't value the move
+    const [u,p0,ccy]=prev.pos[t], p1=c[1];
+    const f0=_snapFx(prev,ccy), f1=_snapFx(curr,ccy);
+    if(f0==null||f1==null) return;
+    price+=u*(p1-p0)*f1;                           // price move on opening units, at closing FX
+    fx   +=u*p0*(f1-f0);                           // FX move on opening value
+  });
+  out.hasHoldings=true; out.price=price; out.fx=fx; out.mkt=price+fx;
+  out.newMoney=out.invDelta-out.mkt;
+  out.partial=!!(prev.posMissing||curr.posMissing);
+  return out;
+}
+// Chain snapshots that are at least 5 days apart (so same-day / next-day snapshots don't
+// create noise or drop value between periods).
+function buildPeriods(){
+  const list=[]; let anchor=snapshots[0];
+  for(let i=1;i<snapshots.length;i++){
+    const curr=snapshots[i];
+    const days=(new Date(curr.date)-new Date(anchor.date))/864e5;
+    if(days<5) continue;
+    list.push(periodPerf(anchor,curr)); anchor=curr;
+  }
+  return list;
+}
+// Planner path from the first snapshot: baseline streams grown at the planner's own rates
+// plus the monthly savings the planner would have recommended on that date.
+function buildPlan(){
+  if(!snapshots.length) return null;
+  const base=snapshots[0], a=base.alloc||{};
+  const {nestEgg,retireYear}=computeGoal();
+  const ri=goalSettings.annualReturn/100;
+  const s0={inv:base.investable||((a.Stocks||0)+(a.Cash||0)),cpf:a.CPF||0,prop:a.Property||0,ins:a.Insurance||0,liab:base.totalLiab||0};
+  const t0=new Date(base.date), target=new Date(retireYear,11,31);
+  const nYears=Math.max(0.5,(target-t0)/(365.25*864e5));
+  const noSave=t=>s0.inv*Math.pow(1+ri,t)+s0.cpf*Math.pow(1.03,t)+s0.prop*Math.pow(1.02,t)+s0.ins*Math.pow(1.015,t)-s0.liab;
+  const gap=Math.max(0,nestEgg-noSave(nYears));
+  const fv=t=>ri<1e-4?12*t:(Math.pow(1+ri,t)-1)/(ri/12);   // same convention as computeMonthlySavingsNeeded
+  const S0=gap<=0?0:gap/fv(nYears);
+  const at=t=>noSave(t)+S0*fv(t);
+  return {S0,at,t0,nYears,nestEgg,retireYear,baseDate:base.date,baseNav:base.nav};
+}
+function planDeviation(plan){
+  if(!plan) return [];
+  return snapshots.map(s=>{
+    const t=(new Date(s.date)-plan.t0)/(365.25*864e5);
+    const p=plan.at(Math.max(0,t));
+    return {date:s.date,actual:s.nav,plan:p,dev:s.nav-p};
+  });
+}
+
 function buildInsightsData(){
   const usd=usdSgdRate,thb=thbSgdRate,eur=eurSgdRate;
   const stockBuckets={};
@@ -2584,17 +2657,7 @@ function buildInsightsData(){
     const gapSGD=(t.target/100-currentPct/100)*investable;
     return {...t,current,currentPct,diff,gapSGD};
   });
-  const savingsData=[];
-  for(let i=1;i<snapshots.length;i++){
-    const prev=snapshots[i-1],curr=snapshots[i];
-    const days=(new Date(curr.date)-new Date(prev.date))/(1000*60*60*24);
-    if(days<5||days>60) continue;
-    const stockDelta=(curr.stockValue||0)-(prev.stockValue||0);
-    const navDelta=curr.nav-prev.nav;
-    const mktGain=stockDelta;
-    const netSaved=navDelta-mktGain;
-    savingsData.push({date:curr.date,label:curr.date.slice(0,7),navDelta,mktGain,netSaved,days});
-  }
+  const savingsData=buildPeriods();
   return {stockBuckets,cashTotal,propSG,propTH,cpfTotal,insurTotal,liabTotal,investable,nonInvestable,totalAssets,nav,totalStocks,allocRows,savingsData};
 }
 
@@ -2621,31 +2684,65 @@ function renderInsights(){
       <span style="font-size:11px;color:${statusCol};font-weight:500;white-space:nowrap">${status} · ${gapText}</span>
     </div>`;
   }
+  const plan=buildPlan(), dev=planDeviation(plan);
+  function onTrackChart(){
+    if(!plan||dev.length<2) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">Need at least 2 snapshots to compare against the plan.</p>`;
+    const W=560,H=170,PL=64,PR=24,PT=12,PB=30,gW=W-PL-PR,gH=H-PT-PB;
+    const T=d=>new Date(d).getTime();
+    const t0=T(dev[0].date),t1=T(dev[dev.length-1].date),span=Math.max(1,t1-t0);
+    const maxAbs=Math.max(1,...dev.map(d=>Math.abs(d.dev)))*1.15;
+    const midY=PT+gH/2,toY=v=>midY-(v/maxAbs)*(gH/2),toX=ms=>PL+((ms-t0)/span)*gW;
+    const pts=dev.map(d=>`${toX(T(d.date)).toFixed(1)},${toY(d.dev).toFixed(1)}`);
+    const last=dev[dev.length-1];
+    const col=last.dev>=0?'var(--green)':'var(--red)';
+    let g='';
+    [-maxAbs,0,maxAbs].forEach(v=>{const y=toY(v).toFixed(1);g+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="${v===0?1.2:0.5}" ${v===0?'stroke-dasharray="4 3"':''}/><text x="${PL-4}" y="${(parseFloat(y)+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${v===0?'On plan':(v>0?'+':'')+fmtK(v)}</text>`;});
+    const dots=dev.map(d=>`<circle cx="${toX(T(d.date)).toFixed(1)}" cy="${toY(d.dev).toFixed(1)}" r="3.5" fill="${d.dev>=0?'var(--green)':'var(--red)'}"><title>${d.date}: ${d.dev>=0?'+':'-'}${fmtK(Math.abs(d.dev))} vs plan (actual ${fmtK(d.actual)}, plan ${fmtK(d.plan)})</title></circle>`).join('');
+    const xl=`<text x="${PL}" y="${H-8}" font-size="9" fill="var(--text3)">${dev[0].date}</text><text x="${W-PR}" y="${H-8}" text-anchor="end" font-size="9" fill="var(--text3)">${last.date}</text>`;
+    return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:12px;color:var(--text2)">
+      <span>Net worth vs plan: <strong style="color:${col}">${last.dev>=0?'+':'-'}${fmtK(Math.abs(last.dev))}</strong></span>
+      <span style="margin-left:auto;color:var(--text3)">above the dashed line = ahead of plan</span>
+    </div>
+    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${g}<polyline points="${pts.join(' ')}" fill="none" stroke="var(--blue)" stroke-width="2"/>${dots}${xl}</svg></div>
+    <p style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Plan = your ${plan.baseDate} net worth (${fmtK(plan.baseNav)}) grown at the planner's rates (investable ${goalSettings.annualReturn}%, CPF 3%, property 2%) plus <strong>${fmtK(plan.S0)}/mo</strong> savings — the amount the planner would have recommended that day to reach ${fmtK(plan.nestEgg)} by ${plan.retireYear}. Uses your current goal settings.</p>`;
+  }
   function savingsChart(){
-    if(savingsData.length<1) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">Need at least 2 snapshots to track savings. Record a snapshot each month to build this chart.</p>`;
-    const W=560,H=160,PL=60,PR=20,PT=10,PB=32,gW=W-PL-PR,gH=H-PT-PB;
-    const maxVal=Math.max(...savingsData.map(s=>Math.max(Math.abs(s.netSaved),Math.abs(s.mktGain),1)));
-    const spacing=gW/savingsData.length,barW=Math.min(40,spacing*0.5),midY=PT+gH/2;
+    if(savingsData.length<1) return `<p style="font-size:13px;color:var(--text2);text-align:center;padding:1.5rem 0">Need at least 2 snapshots (5+ days apart) to build this chart. Record a snapshot each month.</p>`;
+    const W=560,H=170,PL=60,PR=20,PT=10,PB=34,gW=W-PL-PR,gH=H-PT-PB;
+    const vals=[];
+    savingsData.forEach(s=>{ if(s.hasHoldings) vals.push(Math.abs(s.mkt),Math.abs(s.newMoney)); else vals.push(Math.abs(s.invDelta)); });
+    const maxVal=Math.max(1,...vals);
+    const spacing=gW/savingsData.length,barW=Math.min(40,spacing*0.55),midY=PT+gH/2;
     const toY=v=>midY-(v/maxVal)*(gH/2);
     let bars='',labels='',ticks='';
     savingsData.forEach((s,i)=>{
       const cx=PL+i*spacing+spacing/2;
-      const mktY=toY(s.mktGain),mktH=Math.abs(mktY-midY);
-      bars+=`<rect x="${(cx-barW/2-2).toFixed(1)}" y="${Math.min(mktY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${mktH.toFixed(1)}" fill="var(--blue)" opacity="0.4" rx="2"/>`;
-      const netY=toY(s.netSaved),netH=Math.abs(netY-midY);
-      bars+=`<rect x="${cx.toFixed(1)}" y="${Math.min(netY,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${netH.toFixed(1)}" fill="${s.netSaved>=0?'var(--green)':'var(--red)'}" opacity="0.85" rx="2"/>`;
-      labels+=`<text x="${cx.toFixed(1)}" y="${H-4}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.label}</text>`;
+      const bar=(x,v,fill,op)=>{const y=toY(v);return `<rect x="${x.toFixed(1)}" y="${Math.min(y,midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${Math.max(1,Math.abs(y-midY)).toFixed(1)}" fill="${fill}" opacity="${op}" rx="2"/>`;};
+      if(s.hasHoldings){
+        bars+=bar(cx-barW/2,s.mkt,'var(--blue)',0.55);
+        bars+=bar(cx,s.newMoney,s.newMoney>=0?'var(--green)':'var(--red)',0.85);
+      } else {
+        bars+=`<rect x="${(cx-barW/4).toFixed(1)}" y="${Math.min(toY(s.invDelta),midY).toFixed(1)}" width="${(barW/2).toFixed(1)}" height="${Math.max(1,Math.abs(toY(s.invDelta)-midY)).toFixed(1)}" fill="var(--gray)" opacity="0.6" rx="2"/>`;
+      }
+      labels+=`<text x="${cx.toFixed(1)}" y="${H-4}" text-anchor="middle" font-size="9" fill="var(--text3)">${s.label}${s.partial?'⚠':''}</text>`;
     });
     [-maxVal,0,maxVal].forEach(v=>{const y=toY(v).toFixed(1);ticks+=`<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--border)" stroke-width="${v===0?1:0.5}"/><text x="${PL-4}" y="${(parseFloat(y)+3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">${fmtK(v)}</text>`;});
-    const avg=savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length;
+    const anyPartial=savingsData.some(s=>s.partial), anyUnsplit=savingsData.some(s=>!s.hasHoldings);
     return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:12px">
-      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--green);display:inline-block"></span>Net new savings</span>
-      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--blue);opacity:.5;display:inline-block"></span>Market gain/loss</span>
-      <span style="margin-left:auto;color:var(--text2)">Avg net savings: <strong style="color:${avg>=0?'var(--green)':'var(--red)'}">${fmtK(avg)}/period</strong></span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--blue);opacity:.55;display:inline-block"></span>Market &amp; FX gain</span>
+      <span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--green);display:inline-block"></span>New money (est.)</span>
+      ${anyUnsplit?`<span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:8px;border-radius:2px;background:var(--gray);opacity:.6;display:inline-block"></span>Pool growth — holdings not recorded</span>`:''}
     </div>
-    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${ticks}${bars}${labels}</svg></div>`;
+    <div style="overflow-x:auto"><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${ticks}${bars}${labels}</svg></div>
+    <p style="font-size:11px;color:var(--text3);margin-top:6px;line-height:1.5">Market &amp; FX gain = price and currency moves on the holdings you owned at the start of each period. New money = growth in stocks + cash left over after that (savings, dividends, asset sales such as Prudential/Rolex). Moving cash into stocks changes neither. Cash held in USD/THB isn't FX-adjusted.${anyUnsplit?' Grey bars are older snapshots saved before holdings were recorded — they show total pool growth only.':''}${anyPartial?' ⚠ = some prices were missing at that snapshot, so the split is approximate.':''}</p>`;
   }
   const t2=computeTotals(),msSaved=computeMonthlySavingsNeeded(t2.nav);
+  const lastDev=dev.length?dev[dev.length-1]:null;
+  const withH=savingsData.filter(s=>s.hasHoldings);
+  const mktTotal=withH.reduce((a,s)=>a+s.mkt,0), nmTotal=withH.reduce((a,s)=>a+s.newMoney,0);
+  const firstH=withH.length?withH[0].from:null;
+  const navGrowth=snapshots.length>1?snapshots[snapshots.length-1].nav-snapshots[0].nav:0;
+  const navGrowthPct=snapshots.length>1&&snapshots[0].nav?navGrowth/snapshots[0].nav*100:0;
   document.getElementById('view-insights').innerHTML=`
   <div class="card">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Asset map</div><span style="font-size:11px;color:var(--text3)">Investable = assets you can deploy or rebalance</span></div>
@@ -2732,16 +2829,21 @@ function renderInsights(){
     <div id="insStockTable"></div>
   </div>
   <div class="card">
-    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Monthly savings tracker</div><span style="font-size:11px;color:var(--text3)">Derived from snapshot comparisons</span></div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Green = net new money saved. Blue = market gains/losses. Record a snapshot monthly.</p>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:6px"><div class="card-title" style="margin:0">Progress vs plan</div><span style="font-size:11px;color:var(--text3)">Derived from snapshot comparisons</span></div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6">Judge progress by net worth against the planner's path, not by monthly savings alone — moving cash into stocks is a transfer, not a loss.</p>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:14px">
       <div class="metric"><div class="metric-label">Monthly savings needed</div><div class="metric-value" style="color:var(--amber)">${fmtK(msSaved)}</div><div class="metric-sub">to reach ${fmtK(computeGoal().nestEgg)} by ${computeGoal().retireYear}</div></div>
-      ${savingsData.length>0?`<div class="metric"><div class="metric-label">Average net saved</div><div class="metric-value" style="color:var(--green)">${fmtK(savingsData.reduce((s,r)=>s+r.netSaved,0)/savingsData.length)}</div><div class="metric-sub">per snapshot period</div></div>
-      <div class="metric"><div class="metric-label">Total market gain</div><div class="metric-value" style="color:var(--blue)">${fmtK(savingsData.reduce((s,r)=>s+r.mktGain,0))}</div><div class="metric-sub">across all periods</div></div>`:''}
+      ${lastDev?`<div class="metric"><div class="metric-label">Net worth vs plan</div><div class="metric-value" style="color:${lastDev.dev>=0?'var(--green)':'var(--red)'}">${lastDev.dev>=0?'+':'-'}${fmtK(Math.abs(lastDev.dev))}</div><div class="metric-sub">${lastDev.dev>=0?'ahead of':'behind'} plan${plan.S0>0?' · ≈ '+Math.round(Math.abs(lastDev.dev)/plan.S0)+' mo of savings':''}</div></div>
+      <div class="metric"><div class="metric-label">Net worth growth</div><div class="metric-value" style="color:${navGrowth>=0?'var(--green)':'var(--red)'}">${navGrowth>=0?'+':''}${fmtK(navGrowth)}</div><div class="metric-sub">${navGrowthPct>=0?'+':''}${navGrowthPct.toFixed(1)}% since ${snapshots[0].date}</div></div>`:''}
+      <div class="metric"><div class="metric-label">Market &amp; FX gain</div><div class="metric-value" style="color:var(--blue)">${withH.length?fmtK(mktTotal):'—'}</div><div class="metric-sub">${withH.length?'since '+firstH:'starts with your next snapshot'}</div></div>
+      <div class="metric"><div class="metric-label">New money (est.)</div><div class="metric-value" style="color:var(--green)">${withH.length?fmtK(nmTotal):'—'}</div><div class="metric-sub">${withH.length?'savings, dividends, asset sales':'needs holdings in 2 snapshots'}</div></div>
     </div>
+    <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:6px">Net worth vs plan</div>
+    ${onTrackChart()}
+    <div style="font-size:11px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin:16px 0 6px">What drove each period</div>
     ${savingsChart()}
     <div style="background:rgba(55,138,221,.06);border:0.5px solid rgba(55,138,221,.2);border-radius:var(--radius-sm);padding:8px 12px;font-size:12px;color:var(--text2);margin-top:12px;line-height:1.6">
-      💡 <strong>How to use this:</strong> Record a snapshot at the same time each month — ideally after salary credit. The green bar tells you how much new wealth you created beyond market movements.
+      💡 <strong>How to use this:</strong> Record a snapshot about once a month. Each one now saves your holdings and FX rates, so the next comparison can show how much of the change was the market and how much was new money.
     </div>
   </div>`;
   setTimeout(renderIndustryCharts, 50);
